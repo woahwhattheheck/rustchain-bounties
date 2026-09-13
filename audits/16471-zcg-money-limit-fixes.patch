@@ -1,0 +1,109 @@
+diff --git a/scripts/bounty_payout.py b/scripts/bounty_payout.py
+--- a/scripts/bounty_payout.py
++++ b/scripts/bounty_payout.py
+@@
+-  - MAX_PER_RUN aggregate cap (default 40) — hard stop per run, surfaced in log
++  - MAX_PER_RUN aggregate RTC cap (default 40) — hard stop per run, surfaced in log
+@@
+-MAX_CLAIM_RTC=float(os.environ.get("MAX_CLAIM_RTC","25")); MAXRUN=int(os.environ.get("MAX_PER_RUN","40"))
++MAX_CLAIM_RTC=float(os.environ.get("MAX_CLAIM_RTC","25")); MAX_RUN_RTC=float(os.environ.get("MAX_PER_RUN","40"))
+@@
+-paid=0; total=0.0
++paid=0; total=0.0; deferred_run_cap=0
+ for i in issues:
+-    if paid>=MAXRUN: print(f"::notice::MAX_PER_RUN={MAXRUN} reached — stopping; remaining eligible will pay next run."); break
+     t=i["title"].lower()
+@@
+     if is_docstring:
+@@
+         memo=f"Docstring bounty — claim #{num}, gate-verified (source: {source})"
+         idem=f"docstring-claim-{num}"
++    # MAX_PER_RUN is an RTC budget, not a claim-count budget. Check the actual
++    # transfer amount after every gate-specific amount has been resolved. Do
++    # not break on one claim that does not fit: a later smaller claim may still
++    # fit under the same aggregate ceiling, but every deferral is surfaced.
++    if amount <= 0:
++        print(f"::warning::#{num} has non-positive payout amount {amount}; skipping")
++        continue
++    if total + amount > MAX_RUN_RTC:
++        deferred_run_cap += 1
++        print(f"::notice::#{num} deferred: {total:g}+{amount:g} RTC would exceed "
++              f"MAX_PER_RUN={MAX_RUN_RTC:g} RTC; it remains eligible for the next run.")
++        continue
+     ok,resp=transfer(wallet,memo,idem,amount)
+@@
+ print(f"bounty-payout: paid {paid} claims = {total:g} RTC this run")
++if deferred_run_cap:
++    print(f"::notice::{deferred_run_cap} eligible claims deferred by the "
++          f"MAX_PER_RUN={MAX_RUN_RTC:g} RTC aggregate ceiling")
+
+diff --git a/scripts/docstring_gate.py b/scripts/docstring_gate.py
+--- a/scripts/docstring_gate.py
++++ b/scripts/docstring_gate.py
+@@
+ def docstring_rtc_this_week(author):
+     """RTC this author has already been granted for docstrings in 7 days.
+ 
+-    Summed from this gate's own `rtc-payout-amount` markers rather than from
+-    the chain, so the check works from Actions with no node access and no
+-    admin key. Only claims the gate itself verified are counted.
++    The grant event is the gate's trusted `rtc-payout-amount` comment, not the
++    issue creation time. A claim may wait more than seven days for its PR to
++    merge and then be granted today; filtering on `created:` silently erased
++    that grant from the rolling ceiling.
++
++    Search recently UPDATED verified claims (a new gate comment updates the
++    issue), page search results completely, then count only amount-marker
++    comments posted by GitHub Actions inside the precise seven-day window.
++    This keeps the accounting event-aligned and prevents an arbitrary public
++    commenter from manufacturing a cap charge.
+     """
+-    since = (datetime.datetime.now(datetime.timezone.utc)
+-             - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
++    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
++    since = cutoff.strftime("%Y-%m-%d")
+     q = (f"repo:{REPO} is:issue author:{author} label:docstring-verified "
+-         f"created:>{since}")
+-    res = gh(["api", "-X", "GET", "search/issues", "-f", f"q={q}", "-f", "per_page=100"], {}, strict=True)
++         f"updated:>{since}")
++    pages = gh(["api", "--paginate", "--slurp", "-X", "GET", "search/issues",
++                "-f", f"q={q}", "-f", "per_page=100"], [], strict=True)
++    if isinstance(pages, dict):
++        pages = [pages]
++    if not isinstance(pages, list) or any(not isinstance(page, dict) for page in pages):
++        raise GhError("weekly earnings search returned an unexpected pagination shape")
+     total = 0.0
+-    for it in (res.get("items") or []):
++    items = [it for page in pages for it in (page.get("items") or [])]
++    for it in items:
+         if str(it.get("number")) == str(NUM):
+             continue          # never count the claim being adjudicated
+-        body = it.get("body") or ""
+-        # The marker lives in a gate comment, not the issue body, so fetch them.
+-        cs = gh(["api", f"/repos/{REPO}/issues/{it['number']}/comments?per_page=100"], [], strict=True) or []
+-        for c in cs:
++        comment_pages = gh(["api", "--paginate", "--slurp",
++                            f"/repos/{REPO}/issues/{it['number']}/comments?per_page=100"],
++                           [], strict=True)
++        if comment_pages and all(isinstance(page, list) for page in comment_pages):
++            comments = [c for page in comment_pages for c in page]
++        elif isinstance(comment_pages, list) and all(isinstance(c, dict) for c in comment_pages):
++            comments = comment_pages
++        else:
++            raise GhError("weekly earnings comments returned an unexpected pagination shape")
++        for c in comments:
++            user = c.get("user") or {}
++            if user.get("login") not in {"github-actions[bot]", "github-actions"}:
++                continue
++            created = c.get("created_at") or ""
++            try:
++                created_at = datetime.datetime.fromisoformat(created.replace("Z", "+00:00"))
++            except (TypeError, ValueError) as exc:
++                raise GhError(f"weekly earnings marker has invalid created_at: {created!r}") from exc
++            if created_at < cutoff:
++                continue
+             m = re.search(r'<!--\s*rtc-payout-amount:\s*([\d.]+)\s*-->', c.get("body") or "")
+             if m:
+                 total += float(m.group(1))
+                 break
+     return round(total, 2)
