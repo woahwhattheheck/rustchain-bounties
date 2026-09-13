@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Tests for prose_repo() in scripts/pr_review_gate.py.
+"""Tests for prose_repo() and prose-repo authority in pr_review_gate.py.
 
-Claims that name their repo in prose rather than as a full PR URL resolved to
-(None, N), so the gate assumed TARGET_REPO, looked up a number belonging to a
-different repo, found nothing, and filed the claim as needs-human. That was 7
-of the 13 claims paid out by hand on 2026-08-07.
+Claims that name their repo in prose rather than as a full PR URL resolve to
+(None, N). The named repo is part of the claimant's statement, so it must bind
+the lookup before the default TARGET_REPO is consulted. Otherwise an unrelated
+same-number PR in TARGET_REPO can supply the evidence for the wrong claim.
 
 The risk in fixing it is over-matching: a resolver that grabs "this PR #12"
 would redirect valid claims to a nonexistent repo. These tests pin both
-directions.
+directions and the end-to-end lookup order.
 """
 import importlib.util
 import os
@@ -79,6 +79,101 @@ class PrRefUnchanged(unittest.TestCase):
         title = "[CLAIM] Code review bounty #73 for rustchain-bounties PR #13434"
         _, n = gate.pr_ref(title, "")
         self.assertEqual(n, "13434")
+
+
+class ProseRepoLookupAuthority(unittest.TestCase):
+    """A claimant-named repo wins even when TARGET has the same PR number."""
+
+    def setUp(self):
+        self.old = (gate.api, gate.NUM, gate.REPO, gate.TARGET, gate.CAP, gate.RATE)
+        gate.NUM = "9001"
+        gate.REPO = "Scottcjn/rustchain-bounties"
+        gate.TARGET = "Scottcjn/Rustchain"
+        gate.CAP = 15
+        gate.RATE = "3"
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        gate.api, gate.NUM, gate.REPO, gate.TARGET, gate.CAP, gate.RATE = self.old
+
+    @staticmethod
+    def claim():
+        return {
+            "state": "open",
+            "labels": [],
+            "title": "Code review bounty #73 for rustchain-rips PR #10",
+            "body": "RTC" + "a" * 40,
+            "user": {"login": "alice"},
+        }
+
+    @staticmethod
+    def review(login):
+        return {
+            "submitted_at": "2026-09-13T00:00:00Z",
+            "body": "Finding: " + "x" * 130,
+            "user": {"login": login},
+        }
+
+    def test_named_repo_is_queried_before_same_number_default(self):
+        calls = []
+        writes = []
+
+        def fake_api(path, method="GET", data=None, strict=False):
+            calls.append((path, method))
+            if path == "/repos/Scottcjn/rustchain-bounties/issues/9001" and method == "GET":
+                return self.claim()
+            if path == "/repos/Scottcjn/rustchain-rips/pulls/10/reviews":
+                return [self.review("alice")]
+            if path == "/repos/Scottcjn/Rustchain/pulls/10/reviews":
+                return [self.review("bob")]
+            if path == "/repos/Scottcjn/rustchain-rips/pulls/10/comments?per_page=100":
+                return []
+            if path.startswith("/search/issues?"):
+                return {"total_count": 0}
+            if method in {"POST", "PATCH"}:
+                writes.append((path, method, data))
+                return {}
+            raise AssertionError(f"unexpected API call: {method} {path}")
+
+        gate.api = fake_api
+        gate.main()
+
+        self.assertIn(("/repos/Scottcjn/rustchain-rips/pulls/10/reviews", "GET"), calls)
+        self.assertNotIn(("/repos/Scottcjn/Rustchain/pulls/10/reviews", "GET"), calls)
+        self.assertTrue(any(
+            path.endswith("/labels") and data == {"labels": ["bounty-eligible"]}
+            for path, method, data in writes if method == "POST"
+        ))
+
+    def test_missing_named_repo_fails_human_without_default_fallback(self):
+        calls = []
+        writes = []
+
+        def fake_api(path, method="GET", data=None, strict=False):
+            calls.append((path, method))
+            if path == "/repos/Scottcjn/rustchain-bounties/issues/9001" and method == "GET":
+                return self.claim()
+            if path == "/repos/Scottcjn/rustchain-rips/pulls/10/reviews":
+                return None
+            if path == "/repos/Scottcjn/Rustchain/pulls/10/reviews":
+                raise AssertionError("default repo must not be probed after claimant names a repo")
+            if method in {"POST", "PATCH"}:
+                writes.append((path, method, data))
+                return {}
+            raise AssertionError(f"unexpected API call: {method} {path}")
+
+        gate.api = fake_api
+        gate.main()
+
+        self.assertNotIn(("/repos/Scottcjn/Rustchain/pulls/10/reviews", "GET"), calls)
+        self.assertTrue(any(
+            path.endswith("/labels") and data == {"labels": ["needs-human"]}
+            for path, method, data in writes if method == "POST"
+        ))
+        self.assertFalse(any(
+            path.endswith("/labels") and data == {"labels": ["bounty-eligible"]}
+            for path, method, data in writes if method == "POST"
+        ))
 
 
 if __name__ == "__main__":
