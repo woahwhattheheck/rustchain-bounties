@@ -96,23 +96,31 @@ def gh(args, default=None, strict=False):
         return default
     if p.returncode != 0:
         if strict:
-            raise GhError(f"gh {' '.join(args[:3])} exited {p.returncode}: "
-                          f"{(p.stderr or '').strip()[:200]}")
+            raise GhError(
+                f"gh {' '.join(args[:3])} exited {p.returncode}: "
+                f"{(p.stderr or '').strip()[:200]}"
+            )
         return default
     try:
         return json.loads(p.stdout) if p.stdout.strip() else default
     except json.JSONDecodeError as e:
         if strict:
-            raise GhError(f"gh {' '.join(args[:3])} returned unparseable JSON: {e}") from e
+            raise GhError(
+                f"gh {' '.join(args[:3])} returned unparseable JSON: {e}"
+            ) from e
         return default
 
 
 def gh_raw(args):
-    result = subprocess.run(["gh"] + args, capture_output=True, text=True, timeout=120)
+    result = subprocess.run(
+        ["gh"] + args, capture_output=True, text=True, timeout=120
+    )
     if result.returncode != 0:
-        raise GhError(f"gh {' '.join(args[:3])} failed (exit {result.returncode}): {result.stderr.strip()}")
+        raise GhError(
+            f"gh {' '.join(args[:3])} failed (exit {result.returncode}): "
+            f"{result.stderr.strip()}"
+        )
     return result.stdout
-
 
 
 def add_labels(*names):
@@ -162,7 +170,9 @@ def commit_payable_state(amount):
         # Do not add `needs-human`: the scheduled fresh-claim sweep excludes it.
         # With no payable labels written yet, leaving the claim untouched is what
         # makes the transient publication failure automatically retryable.
-        print(f"::error::trusted payout marker was not published on {REPO}#{NUM}: {e}")
+        print(
+            f"::error::trusted payout marker was not published on {REPO}#{NUM}: {e}"
+        )
         return False
 
     if not add_labels("bounty-eligible", "docstring-verified"):
@@ -174,6 +184,38 @@ def commit_payable_state(amount):
     return True
 
 
+def issue_comments(issue_number):
+    """Return every comment for an issue, failing closed on incomplete pages."""
+    comments = []
+    page = 1
+    while True:
+        batch = gh(
+            [
+                "api",
+                "-X",
+                "GET",
+                f"/repos/{REPO}/issues/{issue_number}/comments",
+                "-f",
+                "per_page=100",
+                "-f",
+                f"page={page}",
+            ],
+            None,
+            strict=True,
+        )
+        if not isinstance(batch, list):
+            raise GhError(
+                f"comments page {page} for {REPO}#{issue_number} was not a JSON list"
+            )
+        if len(batch) > 100:
+            raise GhError(
+                f"comments page {page} for {REPO}#{issue_number} exceeded per_page=100"
+            )
+        comments.extend(batch)
+        if len(batch) < 100:
+            return comments
+        page += 1
+
 
 def docstring_rtc_this_week(author):
     """RTC this author has already been granted for docstrings in 7 days.
@@ -182,20 +224,38 @@ def docstring_rtc_this_week(author):
     the chain, so the check works from Actions with no node access and no
     admin key. Only claims the gate itself verified are counted.
     """
-    since = (datetime.datetime.now(datetime.timezone.utc)
-             - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
-    q = (f"repo:{REPO} is:issue author:{author} label:docstring-verified "
-         f"created:>{since}")
-    res = gh(["api", "-X", "GET", "search/issues", "-f", f"q={q}", "-f", "per_page=100"], {}, strict=True)
+    since = (
+        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
+    ).strftime("%Y-%m-%d")
+    q = (
+        f"repo:{REPO} is:issue author:{author} label:docstring-verified "
+        f"created:>{since}"
+    )
+    res = gh(
+        [
+            "api",
+            "-X",
+            "GET",
+            "search/issues",
+            "-f",
+            f"q={q}",
+            "-f",
+            "per_page=100",
+        ],
+        {},
+        strict=True,
+    )
     total = 0.0
     for it in (res.get("items") or []):
         if str(it.get("number")) == str(NUM):
-            continue          # never count the claim being adjudicated
-        body = it.get("body") or ""
-        # The marker lives in a gate comment, not the issue body, so fetch them.
-        cs = gh(["api", f"/repos/{REPO}/issues/{it['number']}/comments?per_page=100"], [], strict=True) or []
-        for c in cs:
-            m = re.search(r'<!--\s*rtc-payout-amount:\s*([\d.]+)\s*-->', c.get("body") or "")
+            continue  # never count the claim being adjudicated
+        # The marker lives in a gate comment, not the issue body. Fetch every
+        # page: a marker after comment 100 is still authoritative payout state.
+        for comment in issue_comments(it["number"]):
+            m = re.search(
+                r'<!--\s*rtc-payout-amount:\s*([\d.]+)\s*-->',
+                comment.get("body") or "",
+            )
             if m:
                 total += float(m.group(1))
                 break
@@ -246,12 +306,22 @@ def main():
     if not NUM:
         print("ISSUE_NUMBER not set", file=sys.stderr)
         return 1
-    iss = gh(["issue", "view", NUM, "-R", REPO,
-              "--json", "title,body,labels,author,state"], {})
+    iss = gh(
+        [
+            "issue",
+            "view",
+            NUM,
+            "-R",
+            REPO,
+            "--json",
+            "title,body,labels,author,state",
+        ],
+        {},
+    )
     if not iss:
         print(f"could not read {REPO}#{NUM}", file=sys.stderr)
         return 1
-    labels = {l["name"] for l in iss.get("labels", [])}
+    labels = {label["name"] for label in iss.get("labels", [])}
     if is_already_adjudicated(labels):
         print("already adjudicated; skipping")
         return 0
@@ -260,29 +330,69 @@ def main():
         print("not a docstring claim; leaving for another gate")
         return 0
 
-    m = PR_RE.search(body) or PR_RE.search(title)
-    if not m:
-        gh(["issue", "comment", NUM, "-R", REPO, "--body",
-            "🤖 Docstring gate: no pull request URL found in this claim. Add the full "
-            "`https://github.com/<owner>/<repo>/pull/<n>` link and it will be re-checked."], None)
+    match = PR_RE.search(body) or PR_RE.search(title)
+    if not match:
+        gh(
+            [
+                "issue",
+                "comment",
+                NUM,
+                "-R",
+                REPO,
+                "--body",
+                "🤖 Docstring gate: no pull request URL found in this claim. Add the full "
+                "`https://github.com/<owner>/<repo>/pull/<n>` link and it will be re-checked.",
+            ],
+            None,
+        )
         add_labels("needs-human")
         return 0
-    pr_repo, pr_num = m.group(1), m.group(2)
+    pr_repo, pr_num = match.group(1), match.group(2)
 
-    pr = gh(["pr", "view", pr_num, "-R", pr_repo,
-             "--json", "state,additions,deletions,files,author,mergedAt"], {})
+    pr = gh(
+        [
+            "pr",
+            "view",
+            pr_num,
+            "-R",
+            pr_repo,
+            "--json",
+            "state,additions,deletions,files,author,mergedAt",
+        ],
+        {},
+    )
     if not pr:
-        gh(["issue", "comment", NUM, "-R", REPO, "--body",
-            f"🤖 Docstring gate: could not read {pr_repo}#{pr_num}. Flagged for a human."], None)
+        gh(
+            [
+                "issue",
+                "comment",
+                NUM,
+                "-R",
+                REPO,
+                "--body",
+                f"🤖 Docstring gate: could not read {pr_repo}#{pr_num}. Flagged for a human.",
+            ],
+            None,
+        )
         add_labels("needs-human")
         return 0
 
     if pr.get("state") != "MERGED":
-        gh(["issue", "comment", NUM, "-R", REPO, "--body",
-            f"🤖 Docstring gate: {pr_repo}#{pr_num} is **{pr.get('state','OPEN').lower()}**, not merged.\n\n"
-            f"Docstring bounties pay on merge, because until then the documentation is not in the "
-            f"codebase. This claim is not closed — it will be re-checked automatically once the PR "
-            f"lands, and you do not need to re-file it."], None)
+        gh(
+            [
+                "issue",
+                "comment",
+                NUM,
+                "-R",
+                REPO,
+                "--body",
+                f"🤖 Docstring gate: {pr_repo}#{pr_num} is **{pr.get('state', 'OPEN').lower()}**, not merged.\n\n"
+                f"Docstring bounties pay on merge, because until then the documentation is not in the "
+                f"codebase. This claim is not closed — it will be re-checked automatically once the PR "
+                f"lands, and you do not need to re-file it.",
+            ],
+            None,
+        )
         add_labels("awaiting-merge")
         print(f"{pr_repo}#{pr_num} not merged ({pr.get('state')}); waiting")
         return 0
@@ -290,16 +400,26 @@ def main():
     diff = gh_raw(["pr", "diff", pr_num, "-R", pr_repo])
     doc_count, total_added, files = count_added_docstrings(diff)
     claimed = None
-    cm = COUNT_RE.search(body) or COUNT_RE.search(title)
-    if cm:
-        claimed = int(cm.group(1))
+    count_match = COUNT_RE.search(body) or COUNT_RE.search(title)
+    if count_match:
+        claimed = int(count_match.group(1))
 
     amount = round(doc_count * RATE, 2)
     if doc_count == 0:
-        gh(["issue", "comment", NUM, "-R", REPO, "--body",
-            f"🤖 Docstring gate: {pr_repo}#{pr_num} is merged, but no added lines in it open a "
-            f"docstring ({total_added} lines added in total). If the work is real and the gate has "
-            f"misread it, say so here and a human will look."], None)
+        gh(
+            [
+                "issue",
+                "comment",
+                NUM,
+                "-R",
+                REPO,
+                "--body",
+                f"🤖 Docstring gate: {pr_repo}#{pr_num} is merged, but no added lines in it open a "
+                f"docstring ({total_added} lines added in total). If the work is real and the gate has "
+                f"misread it, say so here and a human will look.",
+            ],
+            None,
+        )
         add_labels("needs-human")
         return 0
 
@@ -310,66 +430,120 @@ def main():
         # Cannot establish prior earnings => cannot honour the cap => do not pay.
         # Failing closed is the whole point; the previous behaviour approved the
         # claim as though the contributor had earned nothing this week.
-        gh(["issue", "comment", NUM, "-R", REPO, "--body",
-            f"🤖 Docstring gate: verified **{doc_count} docstrings** in {pr_repo}#{pr_num}, but the "
-            f"weekly-earnings lookup failed, so the {MAX_RTC_PER_WEEK:g} RTC/week cap cannot be "
-            f"checked right now.\n\nHolding rather than approving — a failed lookup is not proof "
-            f"that you have earned nothing. This retries automatically on the next sweep; you do "
-            f"not need to do anything."], None)
+        gh(
+            [
+                "issue",
+                "comment",
+                NUM,
+                "-R",
+                REPO,
+                "--body",
+                f"🤖 Docstring gate: verified **{doc_count} docstrings** in {pr_repo}#{pr_num}, but the "
+                f"weekly-earnings lookup failed, so the {MAX_RTC_PER_WEEK:g} RTC/week cap cannot be "
+                f"checked right now.\n\nHolding rather than approving — a failed lookup is not proof "
+                f"that you have earned nothing. This retries automatically on the next sweep; you do "
+                f"not need to do anything.",
+            ],
+            None,
+        )
         add_labels("needs-human")
         print(f"::error::earnings lookup failed, refusing to approve: {e}")
         return 0
     if already + amount > MAX_RTC_PER_WEEK:
         add_labels("weekly-cap-reached")
-        gh(["issue", "comment", NUM, "-R", REPO, "--body",
-            f"🤖 Docstring gate: verified **{doc_count} docstrings** in {pr_repo}#{pr_num} "
-            f"(**{amount} RTC**), but this would take you to "
-            f"**{round(already + amount, 2)} RTC** of docstring earnings in a rolling 7 days, "
-            f"over the **{MAX_RTC_PER_WEEK:g} RTC/week** ceiling for this bounty type.\n\n"
-            f"**The work is accepted and this claim is not closed.** It becomes payable again as "
-            f"soon as the rolling window clears, and it will be picked up automatically. You do "
-            f"not need to re-file it or do anything.\n\n"
-            f"Why the ceiling exists: documentation bounties are unbounded by nature, since there "
-            f"is always another file. The cap keeps one bounty type from consuming the pool, and "
-            f"40 RTC/week is roughly the top of what any contributor earns across all bounty types. "
-            f"It is not a judgement on the quality of your work, which has been consistently fine.\n\n"
-            f"If you want higher-value work, the bounty board has open items at 7 to 35 RTC each "
-            f"that are not rate-limited."], None)
-        print(f"weekly cap: {author} at {already} + {amount} > {MAX_RTC_PER_WEEK}")
+        gh(
+            [
+                "issue",
+                "comment",
+                NUM,
+                "-R",
+                REPO,
+                "--body",
+                f"🤖 Docstring gate: verified **{doc_count} docstrings** in {pr_repo}#{pr_num} "
+                f"(**{amount} RTC**), but this would take you to "
+                f"**{round(already + amount, 2)} RTC** of docstring earnings in a rolling 7 days, "
+                f"over the **{MAX_RTC_PER_WEEK:g} RTC/week** ceiling for this bounty type.\n\n"
+                f"**The work is accepted and this claim is not closed.** It becomes payable again as "
+                f"soon as the rolling window clears, and it will be picked up automatically. You do "
+                f"not need to re-file it or do anything.\n\n"
+                f"Why the ceiling exists: documentation bounties are unbounded by nature, since there "
+                f"is always another file. The cap keeps one bounty type from consuming the pool, and "
+                f"40 RTC/week is roughly the top of what any contributor earns across all bounty types. "
+                f"It is not a judgement on the quality of your work, which has been consistently fine.\n\n"
+                f"If you want higher-value work, the bounty board has open items at 7 to 35 RTC each "
+                f"that are not rate-limited.",
+            ],
+            None,
+        )
+        print(
+            f"weekly cap: {author} at {already} + {amount} > {MAX_RTC_PER_WEEK}"
+        )
         return 0
 
     if amount > MAX_RTC:
-        gh(["issue", "comment", NUM, "-R", REPO, "--body",
-            f"🤖 Docstring gate: verified **{doc_count} docstrings** in {pr_repo}#{pr_num}, which at "
-            f"{RATE} RTC each comes to {amount} RTC. That is above the {MAX_RTC} RTC auto-pay ceiling, "
-            f"so it needs a human to release it. Nothing is wrong with the claim."], None)
+        gh(
+            [
+                "issue",
+                "comment",
+                NUM,
+                "-R",
+                REPO,
+                "--body",
+                f"🤖 Docstring gate: verified **{doc_count} docstrings** in {pr_repo}#{pr_num}, which at "
+                f"{RATE} RTC each comes to {amount} RTC. That is above the {MAX_RTC} RTC auto-pay ceiling, "
+                f"so it needs a human to release it. Nothing is wrong with the claim.",
+            ],
+            None,
+        )
         add_labels("needs-human")
         return 0
 
     note = ""
     if claimed is not None and claimed != doc_count:
-        note = (f"\n\nYou claimed **{claimed}**; the diff contains **{doc_count}**. "
-                f"Paying the verified number. If you think the gate has miscounted, say so and a "
-                f"human will check — miscounts are usually arithmetic, not bad faith.")
+        note = (
+            f"\n\nYou claimed **{claimed}**; the diff contains **{doc_count}**. "
+            f"Paying the verified number. If you think the gate has miscounted, say so and a "
+            f"human will check — miscounts are usually arithmetic, not bad faith."
+        )
 
     if not commit_payable_state(amount):
         # Notification is deliberately secondary to durable state. If even this
         # status comment fails, the red run + retryable labels still prevent a
         # false-success terminal state.
-        gh(["issue", "comment", NUM, "-R", REPO, "--body",
-            f"⏸️ 🤖 **Docstring gate: checks passed, but payable state was not fully committed.** "
-            f"PR {pr_repo}#{pr_num} is merged with **{doc_count}** docstrings → **{amount} RTC**. "
-            f"The gate is holding this claim for retry rather than reporting it as verified."], None)
+        gh(
+            [
+                "issue",
+                "comment",
+                NUM,
+                "-R",
+                REPO,
+                "--body",
+                f"⏸️ 🤖 **Docstring gate: checks passed, but payable state was not fully committed.** "
+                f"PR {pr_repo}#{pr_num} is merged with **{doc_count}** docstrings → **{amount} RTC**. "
+                f"The gate is holding this claim for retry rather than reporting it as verified.",
+            ],
+            None,
+        )
         return 1
 
-    gh(["issue", "comment", NUM, "-R", REPO, "--body",
-        f"✅ 🤖 **Docstring gate: verified.**\n\n"
-        f"- PR {pr_repo}#{pr_num} is **merged**\n"
-        f"- Files: `{', '.join(files[:4]) or 'n/a'}`\n"
-        f"- Added lines opening a docstring: **{doc_count}** (of {total_added} added lines)\n"
-        f"- Rate {RATE} RTC each → **{amount} RTC**{note}\n\n"
-        f"Queued for payout. The balance moves after the standard confirmation window, not on this "
-        f"comment."], None)
+    gh(
+        [
+            "issue",
+            "comment",
+            NUM,
+            "-R",
+            REPO,
+            "--body",
+            f"✅ 🤖 **Docstring gate: verified.**\n\n"
+            f"- PR {pr_repo}#{pr_num} is **merged**\n"
+            f"- Files: `{', '.join(files[:4]) or 'n/a'}`\n"
+            f"- Added lines opening a docstring: **{doc_count}** (of {total_added} added lines)\n"
+            f"- Rate {RATE} RTC each → **{amount} RTC**{note}\n\n"
+            f"Queued for payout. The balance moves after the standard confirmation window, not on this "
+            f"comment.",
+        ],
+        None,
+    )
     print(f"verified {doc_count} docstrings -> {amount} RTC on {REPO}#{NUM}")
     return 0
 
