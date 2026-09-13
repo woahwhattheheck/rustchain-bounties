@@ -1,5 +1,4 @@
 from pathlib import Path
-import json
 import unittest
 
 from scripts.bounty_payout_fresh_auth import build_fresh_source
@@ -12,6 +11,7 @@ PAYOUT = REPO_ROOT / "scripts" / "bounty_payout.py"
 _FIXTURE = r'''
 import json
 transfers=[]
+REPO="owner/repo"
 def gh(args):
     return json.dumps(AUTH_NOW)
 def _comment_author_login(c):
