@@ -247,6 +247,21 @@ def main():
         print(f"{pr_repo}#{pr_num} not merged ({pr.get('state')}); waiting")
         return 0
 
+    author = (iss.get("author") or {}).get("login", "")
+    pr_author = (pr.get("author") or {}).get("login", "")
+    if not author or not pr_author or author.casefold() != pr_author.casefold():
+        claimed_by = f"@{author}" if author else "an unknown claimant"
+        written_by = f"@{pr_author}" if pr_author else "an unknown PR author"
+        gh(["issue", "comment", NUM, "-R", REPO, "--body",
+            f"⏸️ 🤖 **Docstring gate: work ownership needs human review.** PR {pr_repo}#{pr_num} "
+            f"is authored by **{written_by}**, while this claim was filed by **{claimed_by}**. "
+            f"Automatic payout requires the claimant to be the cited PR author; holding instead "
+            f"of paying the wrong identity. If this was co-authored or submitted under an agreed "
+            f"proxy, a maintainer can approve that exception."], None)
+        add_labels("needs-human")
+        print(f"claim/PR author mismatch on {REPO}#{NUM}: {author!r} != {pr_author!r}")
+        return 0
+
     diff = gh_raw(["pr", "diff", pr_num, "-R", pr_repo])
     doc_count, total_added, files = count_added_docstrings(diff)
     claimed = None
@@ -263,7 +278,6 @@ def main():
         add_labels("needs-human")
         return 0
 
-    author = (iss.get("author") or {}).get("login", "")
     try:
         already = docstring_rtc_this_week(author) if author else 0.0
     except GhError as e:
