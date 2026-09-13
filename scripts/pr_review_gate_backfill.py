@@ -23,6 +23,9 @@ SAFETY
 ------
   - The gate itself is idempotent: it skips issues it has already labelled or
     closed. Re-running is harmless.
+  - Discovery paginates ALL open issues. MAX_PER_RUN bounds adjudication work,
+    not discovery; otherwise an issue outside a discovery cap can be stranded
+    forever while the run reports a clean queue.
   - Bounded per run (MAX_PER_RUN, default 60) so one sweep cannot exhaust the
     API budget. When the bound truncates the queue, the remainder is REPORTED,
     not silently dropped -- a silent cap reads as "everything is handled".
@@ -55,32 +58,57 @@ def _load_gate():
     return mod
 
 
+def _flatten_issue_pages(raw):
+    """Validate and flatten `gh api --paginate --slurp` issue pages.
+
+    `gh api --slurp` wraps each REST page in an outer list. Accept a flat list
+    too so fixtures and older gh builds remain compatible, but reject any mixed
+    or non-list shape: partial discovery is never an authoritative queue.
+    """
+    if not isinstance(raw, list):
+        raise ValueError("issue enumeration must be a JSON list")
+    if not raw:
+        return []
+    if all(isinstance(page, list) for page in raw):
+        items = [item for page in raw for item in page]
+    elif all(isinstance(item, dict) for item in raw):
+        items = raw
+    else:
+        raise ValueError("issue enumeration returned a mixed/unexpected shape")
+    if not all(isinstance(item, dict) for item in items):
+        raise ValueError("issue enumeration contained a non-object item")
+    # REST /issues includes pull requests; `gh issue list` did not. Preserve
+    # issue-only semantics explicitly after switching to exhaustive REST pages.
+    return [item for item in items if "pull_request" not in item]
+
+
 def list_unprocessed(gate):
     """Open review claims that carry neither the processed label nor a verdict.
 
-    Authoritative issue enumeration must fail CLOSED. `gh issue list` failing
-    (auth, rate-limit, 5xx, network) or returning unparseable JSON must NOT be
-    read as "zero open claims" -- that would silently strand every unprocessed
-    claim while this safety-net run reports success. Any failure here exits the
-    process non-zero so the backlog forces a retry instead of looking handled.
-    Reported by @bgrubbs1 under #16471; same failure shape as the cap-lookup
-    fix in test_pr_review_gate_cap_fails_closed.py -- check the effect, not the
-    exit code.
+    Authoritative issue enumeration must fail CLOSED. A failed `gh api`, bad
+    JSON, unexpected shape, or incomplete pagination must NOT be read as "zero
+    open claims" -- that would silently strand every unprocessed claim while
+    this safety-net run reports success.
+
+    IMPORTANT: discovery is deliberately unbounded by MAX_PER_RUN. The repo can
+    have more than 1,000 open issues; a fixed `gh issue list --limit 1000`
+    silently hid older review claims outside that window. We page the REST
+    `/issues` collection to exhaustion, then bound only adjudication below.
     """
     proc = subprocess.run(
-        ["gh", "issue", "list", "-R", REPO, "--state", "open",
-         "--limit", "1000", "--json", "number,title,labels"],
-        capture_output=True, text=True, timeout=180,
+        ["gh", "api", "--paginate", "--slurp",
+         f"repos/{REPO}/issues?state=open&per_page=100&sort=created&direction=asc"],
+        capture_output=True, text=True, timeout=300,
     )
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout or "").strip()[:200]
-        print(f"::error::gh issue list failed (exit {proc.returncode}): {detail}",
+        print(f"::error::gh issue enumeration failed (exit {proc.returncode}): {detail}",
               file=sys.stderr)
         sys.exit(1)
     try:
-        issues = json.loads(proc.stdout or "[]")
-    except json.JSONDecodeError as exc:
-        print(f"::error::could not parse issue list as JSON: {exc}", file=sys.stderr)
+        issues = _flatten_issue_pages(json.loads(proc.stdout or "[]"))
+    except (json.JSONDecodeError, ValueError) as exc:
+        print(f"::error::could not parse complete issue enumeration: {exc}", file=sys.stderr)
         sys.exit(1)
 
     never, stranded = [], []
