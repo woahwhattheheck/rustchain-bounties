@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: MIT
+name: Docstring Discovery Tests
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/docstring_candidate_search.sh'
+      - 'tests/test_docstring_candidate_search.py'
+      - '.github/workflows/docstring-gate.yml'
+      - '.github/workflows/docstring-discovery-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/docstring_candidate_search.sh'
+      - 'tests/test_docstring_candidate_search.py'
+      - '.github/workflows/docstring-gate.yml'
+      - '.github/workflows/docstring-discovery-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fail-closed-discovery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Run candidate-discovery regression tests
+        run: python3 -m unittest discover -s tests -p 'test_docstring_candidate_search.py' -v

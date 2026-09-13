@@ -64,13 +64,10 @@ jobs:
           fi
 
           # Scheduled sweep: anything held awaiting-merge, plus recent claims
-          # that have not been adjudicated yet.
-          held=$(gh api -X GET search/issues \
-                  -f q="repo:${GH_REPO} is:issue is:open label:awaiting-merge" \
-                  -f per_page=60 --jq '.items[].number' 2>/dev/null || true)
-          fresh=$(gh api -X GET search/issues \
-                  -f q="repo:${GH_REPO} is:issue is:open -label:bounty-eligible -label:awaiting-merge -label:needs-human docstring" \
-                  -f per_page=60 --jq '.items[].number' 2>/dev/null || true)
+          # that have not been adjudicated yet. Discovery must fail closed: an
+          # API/search failure means the candidate set is UNKNOWN, not empty.
+          held=$(bash scripts/docstring_candidate_search.sh held) || exit $?
+          fresh=$(bash scripts/docstring_candidate_search.sh fresh) || exit $?
 
           # Three separate counters. The old loop kept one, incremented it once
           # per ITERATION after `|| true`, and printed it as "adjudicated N" —
