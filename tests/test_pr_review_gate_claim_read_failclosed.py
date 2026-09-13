@@ -1,0 +1,155 @@
+# SPDX-License-Identifier: MIT
+"""Zero-network regressions for the PR-review gate's fail-closed entrypoint."""
+import importlib.util
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+GATE_PATH = ROOT / "scripts" / "pr_review_gate.py"
+BACKFILL_PATH = ROOT / "scripts" / "pr_review_gate_backfill.py"
+
+
+def load_gate():
+    spec = importlib.util.spec_from_file_location("pr_review_gate_entrypoint_test", GATE_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.REPO = "Scottcjn/rustchain-bounties"
+    mod.NUM = "42"
+    mod.TARGET = "Scottcjn/Rustchain"
+    return mod
+
+
+def claim(*, labels=None, state="open", title="Code review bounty #73"):
+    return {
+        "state": state,
+        "labels": [{"name": name} for name in (labels or [])],
+        "title": title,
+        "body": "RTC" + "a" * 40,
+        "user": {"login": "alice"},
+    }
+
+
+@pytest.mark.parametrize("status", [403, 429])
+def test_authoritative_claim_transport_failure_exits_nonzero(status):
+    gate = load_gate()
+    core_called = False
+
+    def provider(path, method="GET", data=None, strict=False):
+        assert strict is True
+        raise gate.ApiError(f"GET {path} -> HTTP {status}")
+
+    def should_not_run():
+        nonlocal core_called
+        core_called = True
+
+    gate.api = provider
+    gate._core.main = should_not_run
+
+    assert gate.main() == 1
+    assert core_called is False
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        {},
+        {"state": "open", "title": "Code review bounty #73", "labels": "not-a-list"},
+        {"state": "open", "title": None, "labels": []},
+    ],
+)
+def test_empty_or_malformed_claim_detail_exits_nonzero(payload):
+    gate = load_gate()
+    gate.api = lambda path, method="GET", data=None, strict=False: payload
+    gate._core.main = lambda: pytest.fail("core must not run after bad claim detail")
+
+    assert gate.main() == 1
+
+
+def test_open_review_claim_noop_core_exits_nonzero():
+    gate = load_gate()
+    calls = []
+
+    def provider(path, method="GET", data=None, strict=False):
+        calls.append((path, method, strict))
+        return claim()
+
+    gate.api = provider
+    gate._core.main = lambda: None
+
+    assert gate.main() == 1
+    assert calls == [("/repos/Scottcjn/rustchain-bounties/issues/42", "GET", True)]
+
+
+def test_preserved_core_ordinary_unresolved_claim_is_authoritative():
+    gate = load_gate()
+    labels = []
+    comments = []
+    issue_path = "/repos/Scottcjn/rustchain-bounties/issues/42"
+
+    def provider(path, method="GET", data=None, strict=False):
+        if path == issue_path and method == "GET":
+            return claim()
+        if path == f"{issue_path}/labels" and method == "POST":
+            labels.extend(data["labels"])
+            return {}
+        if path == f"{issue_path}/comments" and method == "POST":
+            comments.append(data["body"])
+            return {}
+        raise AssertionError(f"unexpected provider call: {method} {path}")
+
+    gate.api = provider
+
+    assert gate.main() == 0
+    assert "gate-processed" in labels
+    assert "needs-human" in labels
+    assert comments
+
+
+def test_successful_close_counts_as_authoritative_disposition():
+    gate = load_gate()
+    issue_path = "/repos/Scottcjn/rustchain-bounties/issues/42"
+
+    def provider(path, method="GET", data=None, strict=False):
+        if path == issue_path and method == "GET":
+            return claim()
+        if path == issue_path and method == "PATCH" and data["state"] == "closed":
+            return {}
+        raise AssertionError(f"unexpected provider call: {method} {path}")
+
+    gate.api = provider
+
+    def close_core():
+        gate._core.api(
+            issue_path, "PATCH", {"state": "closed", "state_reason": "not_planned"}
+        )
+        return None
+
+    gate._core.main = close_core
+
+    assert gate.main() == 0
+
+
+def test_backfill_does_not_count_failclosed_child_as_adjudicated():
+    spec = importlib.util.spec_from_file_location("pr_review_gate_backfill_test", BACKFILL_PATH)
+    backfill = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(backfill)
+    failed = SimpleNamespace(returncode=1, stdout="", stderr="claim read failed closed")
+
+    with patch.object(backfill.subprocess, "run", return_value=failed):
+        assert backfill.adjudicate(42) is False
+
+
+def test_preexisting_needs_human_nonretry_stays_idempotent(monkeypatch):
+    gate = load_gate()
+    monkeypatch.delenv("RETRY_NEEDS_HUMAN", raising=False)
+    gate.api = lambda path, method="GET", data=None, strict=False: claim(
+        labels=["needs-human"]
+    )
+    gate._core.main = lambda: pytest.fail("non-retry needs-human must stay idempotent")
+
+    assert gate.main() == 0
