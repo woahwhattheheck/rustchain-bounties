@@ -45,8 +45,20 @@ print(os.environ.get("FAKE_HTTP", "200"), end="")
 
 
 class ConfirmPendingWorkflowTests(unittest.TestCase):
-    def _run(self, responses: list[dict], *, http: str = "200") -> subprocess.CompletedProcess[str]:
+    def _run(
+        self,
+        responses: list[dict],
+        *,
+        http: str = "200",
+        max_iterations: int | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         script = workflow_script()
+        if max_iterations is not None:
+            # Exercise the exact cap-exhaustion branch without paying for sixty
+            # Python/curl process pairs in unit tests. A separate assertion pins
+            # the deployed production cap at 60.
+            script = script.replace("for i in $(seq 1 60); do", f"for i in $(seq 1 {max_iterations}); do")
+            script = script.replace("Stopped after 60 iterations", f"Stopped after {max_iterations} iterations")
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             fake_bin = root / "bin"
@@ -73,14 +85,17 @@ class ConfirmPendingWorkflowTests(unittest.TestCase):
                 env=env,
                 text=True,
                 capture_output=True,
-                timeout=30,
+                timeout=15,
                 check=False,
             )
 
-    def test_run_block_is_valid_bash(self) -> None:
+    def test_run_block_is_valid_bash_and_keeps_production_cap(self) -> None:
+        script = workflow_script()
+        self.assertIn("for i in $(seq 1 60); do", script)
+        self.assertIn("Stopped after 60 iterations", script)
         result = subprocess.run(
             ["bash", "-n"],
-            input=workflow_script(),
+            input=script,
             text=True,
             capture_output=True,
             check=False,
@@ -140,12 +155,14 @@ class ConfirmPendingWorkflowTests(unittest.TestCase):
 
     def test_safety_cap_with_stale_backlog_is_red(self) -> None:
         result = self._run(
-            [{"overdue_stats_measured": True, "confirmed_count": 1, "stale_pending_count": 1}]
+            [{"overdue_stats_measured": True, "confirmed_count": 1, "stale_pending_count": 1}],
+            max_iterations=3,
         )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("iter 60:", result.stdout)
+        self.assertIn("iter 3:", result.stdout)
         self.assertIn("Pending queue safety cap reached", result.stdout)
-        self.assertNotIn("confirmed 60 transfer(s) this run", result.stdout)
+        self.assertIn("Stopped after 3 iterations", result.stdout)
+        self.assertNotIn("confirmed 3 transfer(s) this run", result.stdout)
 
 
 if __name__ == "__main__":
