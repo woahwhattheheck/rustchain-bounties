@@ -116,23 +116,26 @@ def gh_raw(args):
 
 
 def add_labels(*names):
-    """Apply labels via REST.
+    """Apply one or more labels in a single REST request.
 
     `gh issue edit --add-label` goes through GraphQL and currently fails with a
-    Projects-classic deprecation error -- and it fails SILENTLY, so the gate
-    would post "verified" while never marking the claim eligible, and the payout
-    runner would never see it. Verified by observing an adjudicated claim come
-    back with `labels: []`.
+    Projects-classic deprecation error. Use REST instead. When several labels
+    form one state transition, submit them together so the client never creates
+    a deliberate one-label intermediate state across separate requests.
     """
-    ok = True
-    for n in names:
-        r = subprocess.run(["gh", "api", "-X", "POST",
-                            f"/repos/{REPO}/issues/{NUM}/labels", "-f", f"labels[]={n}"],
-                           capture_output=True, text=True, timeout=60)
-        if r.returncode != 0:
-            print(f"::warning::could not apply label {n}: {r.stderr.strip()[:120]}")
-            ok = False
-    return ok
+    if not names:
+        return True
+    args = ["gh", "api", "-X", "POST", f"/repos/{REPO}/issues/{NUM}/labels"]
+    for name in names:
+        args.extend(["-f", f"labels[]={name}"])
+    r = subprocess.run(args, capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        print(
+            f"::warning::could not apply label(s) {', '.join(names)}: "
+            f"{r.stderr.strip()[:120]}"
+        )
+        return False
+    return True
 
 
 def is_already_adjudicated(labels):
@@ -156,16 +159,17 @@ def commit_payable_state(amount):
         # strict helper for this operation: non-zero status raises immediately.
         gh_raw(["issue", "comment", NUM, "-R", REPO, "--body", marker])
     except GhError as e:
-        add_labels("needs-human")
+        # Do not add `needs-human`: the scheduled fresh-claim sweep excludes it.
+        # With no payable labels written yet, leaving the claim untouched is what
+        # makes the transient publication failure automatically retryable.
         print(f"::error::trusted payout marker was not published on {REPO}#{NUM}: {e}")
         return False
 
     if not add_labels("bounty-eligible", "docstring-verified"):
         # A marker without the payable labels is inert: the payout runner and
-        # weekly-cap query both require docstring-verified. A later sweep may
-        # safely retry and publish the same trusted amount again.
-        add_labels("needs-human")
-        print(f"::error::payable labels not fully applied on {REPO}#{NUM}; held, not verified")
+        # weekly-cap query both require docstring-verified. Do not add a hold
+        # label which would exclude this claim from the scheduled retry sweep.
+        print(f"::error::payable labels not applied on {REPO}#{NUM}; held for retry")
         return False
     return True
 
