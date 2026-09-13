@@ -29,11 +29,16 @@ SAFETY
   - Bounded per run (MAX_PER_RUN, default 60) so one sweep cannot exhaust the
     API budget. When the bound truncates the queue, the remainder is REPORTED,
     not silently dropped -- a silent cap reads as "everything is handled".
+  - Bounded batches rotate with GitHub Actions' persistent GITHUB_RUN_NUMBER,
+    so a permanently unresolved prefix cannot consume every scheduled sweep.
+    The rotation covers the combined never-adjudicated + stranded queue, so
+    neither class can starve the other merely by remaining ahead in sort order.
   - Only touches issues whose title is a review claim, per the gate's own
     `is_review_claim`, so it cannot wander into unrelated issues.
 
 Env: GITHUB_TOKEN, GH_REPO, TARGET_REPO, CAP, RATE_RTC, MAX_PER_RUN,
-     PROCESSED_LABEL.
+     PROCESSED_LABEL. GITHUB_RUN_NUMBER is supplied automatically by Actions;
+     local/off-Actions invocations use rotation seed 0.
 """
 import importlib.util
 import json
@@ -127,10 +132,59 @@ def list_unprocessed(gate):
             stranded.append(i["number"])
         elif PROCESSED_LABEL not in labels:
             never.append(i["number"])
-    # Oldest first: the longest-waiting contributor gets an answer first.
-    # Never-adjudicated claims lead, since nobody has told those people
-    # anything at all.
     return sorted(never), sorted(stranded)
+
+
+def _rotation_run_number():
+    """Return the durable Actions run counter used as the fair-queue cursor.
+
+    Scheduled and workflow_dispatch runs always receive GITHUB_RUN_NUMBER from
+    Actions. A local invocation has no durable scheduler state, so seed zero is
+    explicit rather than pretending local reruns provide cross-run fairness.
+    """
+    raw = os.environ.get("GITHUB_RUN_NUMBER", "0")
+    try:
+        run_number = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"GITHUB_RUN_NUMBER must be an integer, got {raw!r}") from exc
+    if run_number < 0:
+        raise ValueError("GITHUB_RUN_NUMBER must be >= 0")
+    return run_number
+
+
+def select_batch(never, stranded, max_per_run, run_number):
+    """Select one bounded batch without allowing a stable prefix to starve tail.
+
+    The combined queue keeps the historical never-adjudicated-first ordering as
+    its canonical ordering, then rotates the *bounded window* by a durable
+    Actions run counter. Advancing by one full batch per run means a static
+    queue is covered in consecutive chunks (wrapping at the end); a permanently
+    unresolved first batch therefore cannot be selected forever.
+
+    Returns (new_claim_numbers, retry_claim_numbers). The two lists are split
+    only after fair selection so one class cannot monopolize every run simply
+    by occupying the front of the canonical queue.
+    """
+    if max_per_run <= 0:
+        raise ValueError("MAX_PER_RUN must be > 0")
+    if run_number < 0:
+        raise ValueError("run_number must be >= 0")
+
+    queue = [(False, n) for n in sorted(never)] + [(True, n) for n in sorted(stranded)]
+    total = len(queue)
+    if not total:
+        return [], []
+
+    if total > max_per_run:
+        start = (run_number * max_per_run) % total
+        rotated = queue[start:] + queue[:start]
+        selected = rotated[:max_per_run]
+    else:
+        selected = queue
+
+    batch_new = [number for retry, number in selected if not retry]
+    batch_retry = [number for retry, number in selected if retry]
+    return batch_new, batch_retry
 
 
 def adjudicate(number, retry=False):
@@ -148,15 +202,21 @@ def adjudicate(number, retry=False):
 
 
 def main():
+    try:
+        run_number = _rotation_run_number()
+        if MAX_PER_RUN <= 0:
+            raise ValueError("MAX_PER_RUN must be > 0")
+    except ValueError as exc:
+        print(f"::error::invalid backfill scheduling configuration: {exc}", file=sys.stderr)
+        return 2
+
     gate = _load_gate()
     never, stranded = list_unprocessed(gate)
     total = len(never) + len(stranded)
-    # Never-adjudicated claims get the budget first: those contributors have
-    # heard nothing at all, whereas a stranded claim at least got a verdict.
-    batch_new = never[:MAX_PER_RUN]
-    batch_retry = stranded[:max(0, MAX_PER_RUN - len(batch_new))]
+    batch_new, batch_retry = select_batch(never, stranded, MAX_PER_RUN, run_number)
     print(f"gate-backfill: {len(never)} never-adjudicated, {len(stranded)} stranded "
-          f"on needs-human; processing {len(batch_new)}+{len(batch_retry)}")
+          f"on needs-human; processing {len(batch_new)}+{len(batch_retry)} "
+          f"(fair rotation run={run_number})")
 
     done = 0
     for n in batch_new:
@@ -172,7 +232,7 @@ def main():
     if remaining > 0:
         # Never let a bound look like completion.
         print(f"::notice::{remaining} claims still pending "
-              f"(MAX_PER_RUN={MAX_PER_RUN}); they process on the next run.")
+              f"(MAX_PER_RUN={MAX_PER_RUN}); fair rotation advances next run.")
 
     # Fail the run when adjudications failed.
     #
