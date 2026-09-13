@@ -1,15 +1,10 @@
 # SPDX-License-Identifier: MIT
 """The PR-review-gate backfill sweep must fail CLOSED on issue enumeration.
 
-`list_unprocessed()` used to read `subprocess.run(...).stdout` and discard the
-return code, so a failed `gh issue list` (auth, rate-limit, 5xx, network) or
-truncated JSON on a zero exit became an empty list -> "zero open claims" -> a
-green run that adjudicated nothing while every unprocessed claim stayed
-stranded. That is this project's signature failure shape: reports success while
-doing nothing. Reported by @bgrubbs1 under #16471.
-
-These tests pin that authoritative enumeration failure exits non-zero, while a
-genuine empty result on a successful exit is still treated as a real zero.
+`list_unprocessed()` must distinguish a genuinely empty repository from an API
+failure, malformed response, or truncated discovery set. Discovery paginates
+all open issues first; `MAX_PER_RUN` only bounds adjudication after the complete
+queue is known.
 """
 import importlib.util
 import json
@@ -39,7 +34,7 @@ class FakeGate:
 
 def _completed(returncode, stdout="", stderr=""):
     return subprocess.CompletedProcess(
-        args=["gh", "issue", "list"],
+        args=["gh", "api"],
         returncode=returncode,
         stdout=stdout,
         stderr=stderr,
@@ -47,7 +42,7 @@ def _completed(returncode, stdout="", stderr=""):
 
 
 def test_gh_nonzero_exit_fails_closed(monkeypatch):
-    """gh issue list failing with empty stdout must NOT read as zero claims."""
+    """Issue enumeration failing with empty stdout must NOT read as zero claims."""
     mod = load_backfill()
     monkeypatch.setattr(
         mod.subprocess, "run", lambda *a, **k: _completed(1, stdout="", stderr="HTTP 503")
@@ -61,6 +56,18 @@ def test_malformed_json_on_success_fails_closed(monkeypatch):
     """Exit 0 with truncated/garbage JSON must NOT read as zero claims."""
     mod = load_backfill()
     monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _completed(0, stdout="{"))
+    with pytest.raises(SystemExit) as exc:
+        mod.list_unprocessed(FakeGate())
+    assert exc.value.code == 1
+
+
+def test_unexpected_slurp_shape_fails_closed(monkeypatch):
+    """A mixed pagination shape must not be treated as a complete queue."""
+    mod = load_backfill()
+    payload = [[{"number": 1, "title": "x", "labels": []}], {"oops": True}]
+    monkeypatch.setattr(
+        mod.subprocess, "run", lambda *a, **k: _completed(0, stdout=json.dumps(payload))
+    )
     with pytest.raises(SystemExit) as exc:
         mod.list_unprocessed(FakeGate())
     assert exc.value.code == 1
@@ -90,6 +97,27 @@ def test_normal_path_partitions_claims(monkeypatch):
         mod.subprocess, "run", lambda *a, **k: _completed(0, stdout=json.dumps(issues))
     )
     never, stranded = mod.list_unprocessed(FakeGate())
-    assert never == [5]        # unlabeled review claim -> never adjudicated
-    assert stranded == [6]     # needs-human -> re-drive
-    # #7 (bounty-eligible) is done; #8 is not a review claim -> both excluded
+    assert never == [5]
+    assert stranded == [6]
+
+
+def test_slurped_pages_are_all_classified_and_pull_requests_are_excluded(monkeypatch):
+    """Discovery must flatten every REST page rather than silently cap at 1,000."""
+    mod = load_backfill()
+    pages = [
+        [
+            {"number": 5, "title": "Bounty #73 claim: review of PR #100", "labels": []},
+            {"number": 55, "title": "Bounty #73 claim: review of PR #999", "labels": [],
+             "pull_request": {"url": "https://example.test/pr/55"}},
+        ],
+        [
+            {"number": 1005, "title": "Bounty #73 claim: review of PR #101",
+             "labels": [{"name": "needs-human"}]},
+        ],
+    ]
+    monkeypatch.setattr(
+        mod.subprocess, "run", lambda *a, **k: _completed(0, stdout=json.dumps(pages))
+    )
+    never, stranded = mod.list_unprocessed(FakeGate())
+    assert never == [5]
+    assert stranded == [1005]
