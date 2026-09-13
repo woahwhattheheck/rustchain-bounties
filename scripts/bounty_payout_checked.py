@@ -3,10 +3,14 @@
 """Run the payout sweep and fail the job if any transfer was detected failed.
 
 `scripts/bounty_payout.py` deliberately continues after an individual transfer
-failure so independent eligible claims still get a chance to pay.  Historically
-that also meant the process fell off the end with status 0.  This runner keeps
+failure so independent eligible claims still get a chance to pay. Historically
+that also meant the process fell off the end with status 0. This runner keeps
 that continue-the-sweep behaviour while converting the existing machine-readable
 `::warning::pay failed #<n>:` records into a non-zero final status.
+
+The child is the fresh-authorization launcher, which executes the legacy payout
+sweep only after inserting its fail-closed final GitHub authorization fence at
+the money-movement boundary.
 """
 from __future__ import annotations
 
@@ -51,7 +55,7 @@ def run_checked(command: list[str], *, popen=subprocess.Popen) -> int:
 
 
 def main() -> int:
-    payout = Path(__file__).with_name("bounty_payout.py")
+    payout = Path(__file__).with_name("bounty_payout_fresh_auth.py")
     return run_checked([sys.executable, str(payout)])
 
 
