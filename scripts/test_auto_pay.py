@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
-"""Regression tests for the auto-pay sensitive-path guard.
+"""Regression tests for the auto-pay sensitive-path and payment-authority guards.
 
 Run: python3 scripts/test_auto_pay.py   (or `pytest scripts/test_auto_pay.py`)
 
-Focus: `is_sensitive_path` must reject consensus / money / CI paths
-*case-insensitively*. A case-sensitive `startswith` let a PR touch those
-paths under a re-cased prefix (e.g. `Scripts/`, `.GitHub/`) and still slip
-into the conservative auto-tier — an automatic RTC award the guard exists
-to deny. These tests pin the bypass shut.
+Focus: money-movement authority must be explicit. Sensitive paths must be
+recognized case-insensitively, and owner review prose must never become a
+payment directive merely because it quotes or rejects `Payment: N RTC` text.
 """
 
 import importlib.util
@@ -77,6 +75,44 @@ class SensitivePathGuard(unittest.TestCase):
         self.assertEqual(
             auto_pay.SENSITIVE_PREFIXES_LC,
             tuple(p.lower() for p in auto_pay.SENSITIVE_PREFIXES),
+        )
+
+
+class PaymentDirectiveAuthority(unittest.TestCase):
+    def test_accepts_standalone_plain_and_bold_directives(self):
+        self.assertEqual(auto_pay.parse_payment_directive("Payment: 75 RTC"), 75.0)
+        self.assertEqual(auto_pay.parse_payment_directive("**Payment: 75.5 RTC**"), 75.5)
+        self.assertEqual(
+            auto_pay.parse_payment_directive("Approved.\nPayment: 3 RTC\nThanks."),
+            3.0,
+        )
+
+    def test_rejection_or_discussion_prose_is_not_authority(self):
+        for body in (
+            "I do NOT approve Payment: 75 RTC for this PR.",
+            "Contributor asked for Payment: 75 RTC, but this is rejected.",
+            "Please do not use Payment: 75 RTC; needs more work.",
+            "The proposed Payment: 75 RTC is too high.",
+        ):
+            with self.subTest(body=body):
+                self.assertIsNone(auto_pay.parse_payment_directive(body))
+
+    def test_blockquote_inline_code_and_fenced_code_are_not_authority(self):
+        for body in (
+            "> Payment: 75 RTC",
+            "`Payment: 75 RTC`",
+            "```\nPayment: 75 RTC\n```",
+            "~~~text\n**Payment: 75 RTC**\n~~~",
+        ):
+            with self.subTest(body=body):
+                self.assertIsNone(auto_pay.parse_payment_directive(body))
+
+    def test_last_standalone_directive_line_wins_within_comment(self):
+        self.assertEqual(
+            auto_pay.parse_payment_directive(
+                "Payment: 3 RTC\nCorrection follows.\n**Payment: 5 RTC**"
+            ),
+            5.0,
         )
 
 
