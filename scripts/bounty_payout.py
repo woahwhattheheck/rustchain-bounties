@@ -249,7 +249,7 @@ def _comment_author_login(c):
     """Return (login, user_obj) for a comment in either REST or GraphQL shape.
 
     `gh issue view --json comments` returns `author` (GraphQL); some other
-    call paths return `user` (REST). The previous version only checked
+    call paths return `user` (REST shape). The previous version only checked
     `user`, so it silently treated every GraphQL comment as a non-bot.
     """
     if not isinstance(c, dict):
@@ -282,9 +282,13 @@ def resolve_wallet(issue_body, comments, claimant_login=None):
       2. `Wallet: <handle>` line in the issue body, when it parses as a
          plausible GitHub login.
       3. Most recent non-bot `Wallet: <handle>` comment.
-      4. `claimant_login` (the PR author) if it is a plausible login and not
-         a bot. Caller is responsible for bot-excluding.
+      4. `claimant_login` (the PR author) if it is a plausible login.
+
+    Bot claimants are rejected before any destination source is considered so
+    a native/canonical wallet cannot bypass the payout pipeline's bot exclusion.
     """
+    if claimant_login and _is_bot_login(claimant_login, None):
+        return None, None
     # 0. Canonical registry — registered handle always maps to its native wallet.
     if claimant_login and claimant_login.lower() in CANONICAL_WALLETS:
         return CANONICAL_WALLETS[claimant_login.lower()], "canonical"
@@ -311,7 +315,7 @@ def resolve_wallet(issue_body, comments, claimant_login=None):
             m = _find_handle_in_text(cb)
             if m and _looks_like_handle(m):
                 return m, "handle"
-    if claimant_login and _looks_like_handle(claimant_login) and not _is_bot_login(claimant_login, None):
+    if claimant_login and _looks_like_handle(claimant_login):
         return claimant_login, "handle"
     return None, None
 def _list(extra):
