@@ -268,21 +268,6 @@ def main():
     """
     import sys
 
-    # Send capabilities on startup
-    import json
-    sys.stdout.write(json.dumps({
-        "jsonrpc": "2.0",
-        "result": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {"tools": {}},
-            "serverInfo": {
-                "name": "rustchain-mcp",
-                "version": "1.0.0"
-            }
-        }
-    }) + "\n")
-    sys.stdout.flush()
-
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -326,7 +311,7 @@ def main():
                     }
                 }
             else:
-                # Notifcation or unknown — no response needed
+                # Notification or unknown — no response needed
                 continue
 
             sys.stdout.write(json.dumps(response) + "\n")
