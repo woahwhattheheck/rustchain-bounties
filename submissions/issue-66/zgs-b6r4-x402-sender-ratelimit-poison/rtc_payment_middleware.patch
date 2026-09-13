@@ -1,0 +1,39 @@
+diff --git a/x402/rtc_payment_middleware.py b/x402/rtc_payment_middleware.py
+--- a/x402/rtc_payment_middleware.py
++++ b/x402/rtc_payment_middleware.py
+@@
+             if proof is None:
+                 # No payment proof - return 402
+                 return create_402_response(amount, recipient)
+-            
++
++            # Do not trust X-Payment-Sender as a rate-limit principal until
++            # verify_payment_proof() has authenticated the signature and
++            # bound the derived sender to the on-chain transaction.
++            if not verify_payment_proof(proof, amount, recipient):
++                return Response(
++                    json.dumps({"error": "Invalid payment proof"}),
++                    status=402,
++                    mimetype='application/json'
++                )
++
+             # Rate limiting (using global dict for cleanup)
+             sender = proof['sender']
+             now = time.time()
+             minute_key = f"{sender}:{int(now // 60)}"
+@@
+             else:
+                 _rate_limits[minute_key] = 1
+-            
+-            # Verify payment
+-            if not verify_payment_proof(proof, amount, recipient):
+-                return Response(
+-                    json.dumps({"error": "Invalid payment proof"}),
+-                    status=402,
+-                    mimetype='application/json'
+-                )
+-            
++
+             # Payment verified - store sender info and proceed
+             g.rtc_sender = sender
+             g.rtc_payment_amount = amount
