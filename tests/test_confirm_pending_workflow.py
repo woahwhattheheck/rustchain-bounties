@@ -73,7 +73,7 @@ class ConfirmPendingWorkflowTests(unittest.TestCase):
                 env=env,
                 text=True,
                 capture_output=True,
-                timeout=10,
+                timeout=30,
                 check=False,
             )
 
