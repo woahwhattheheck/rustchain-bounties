@@ -117,7 +117,33 @@ class StdioProtocolTests(unittest.TestCase):
         self.assertEqual(2, len(lines), completed.stdout)
         self.assertEqual("first-request", lines[0]["id"])
         self.assertIsNone(lines[1]["id"])
-        self.assertIn("error", lines[1])
+        self.assertEqual(-32700, lines[1]["error"]["code"])
+        self.assertEqual("Parse error", lines[1]["error"]["message"])
+        self.assertEqual("", completed.stderr)
+
+    def test_invalid_request_shapes_get_invalid_request_errors(self):
+        invalid_frames = [
+            "[]",
+            "{}",
+            json.dumps({"jsonrpc": "1.0", "id": 7, "method": "initialize"}),
+            json.dumps({"jsonrpc": "2.0", "id": 8, "method": 17}),
+        ]
+        completed = subprocess.run(
+            [sys.executable, "-m", "rustchain_mcp.server"],
+            cwd=MCP_ROOT,
+            input="\n".join(invalid_frames) + "\n",
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=True,
+        )
+
+        lines = [json.loads(line) for line in completed.stdout.splitlines()]
+        self.assertEqual(4, len(lines), completed.stdout)
+        for response in lines:
+            self.assertIsNone(response["id"])
+            self.assertEqual(-32600, response["error"]["code"])
+            self.assertEqual("Invalid Request", response["error"]["message"])
         self.assertEqual("", completed.stderr)
 
     def test_known_method_notification_is_processed_without_response(self):

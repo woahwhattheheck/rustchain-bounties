@@ -288,12 +288,34 @@ def main():
         msg_id = None
         is_notification = False
         try:
-            request = json.loads(line)
-            if not isinstance(request, dict):
-                raise ValueError("JSON-RPC request must be an object")
+            try:
+                request = json.loads(line)
+            except json.JSONDecodeError:
+                err_resp = {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32700, "message": "Parse error"}
+                }
+                sys.stdout.write(json.dumps(err_resp) + "\n")
+                sys.stdout.flush()
+                continue
+
+            if (
+                not isinstance(request, dict)
+                or request.get("jsonrpc") != "2.0"
+                or not isinstance(request.get("method"), str)
+            ):
+                err_resp = {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32600, "message": "Invalid Request"}
+                }
+                sys.stdout.write(json.dumps(err_resp) + "\n")
+                sys.stdout.flush()
+                continue
 
             is_notification = "id" not in request
-            method = request.get("method")
+            method = request["method"]
             msg_id = request.get("id")
             params = request.get("params", {})
 
