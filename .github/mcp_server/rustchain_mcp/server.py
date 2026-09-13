@@ -272,8 +272,17 @@ def main():
         line = line.strip()
         if not line:
             continue
+
+        # Correlation state is per frame. Never let a malformed later frame
+        # inherit the id (or notification status) of an earlier request.
+        msg_id = None
+        is_notification = False
         try:
             request = json.loads(line)
+            if not isinstance(request, dict):
+                raise ValueError("JSON-RPC request must be an object")
+
+            is_notification = "id" not in request
             method = request.get("method")
             msg_id = request.get("id")
             params = request.get("params", {})
@@ -311,16 +320,25 @@ def main():
                     }
                 }
             else:
-                # Notification or unknown — no response needed
-                continue
+                if is_notification:
+                    continue
+                response = {
+                    "jsonrpc": "2.0",
+                    "id": msg_id,
+                    "error": {"code": -32601, "message": "Method not found"}
+                }
 
+            if is_notification:
+                continue
             sys.stdout.write(json.dumps(response) + "\n")
             sys.stdout.flush()
 
         except Exception as e:
+            if is_notification:
+                continue
             err_resp = {
                 "jsonrpc": "2.0",
-                "id": msg_id if 'msg_id' in dir() else None,
+                "id": msg_id,
                 "error": {"code": -32603, "message": str(e)}
             }
             sys.stdout.write(json.dumps(err_resp) + "\n")
