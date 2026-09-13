@@ -11,6 +11,7 @@ Or with uvx:
 
 import os
 import json
+import math
 import urllib.request
 import urllib.error
 from typing import Any, Optional
@@ -133,6 +134,7 @@ MCP_TOOL_SCHEMA = {
                     },
                     "amount": {
                         "type": "number",
+                        "exclusiveMinimum": 0,
                         "description": "Amount of RTC to transfer"
                     },
                     "admin_key": {
@@ -211,6 +213,14 @@ class RustChainClient:
 
     def transfer(self, from_wallet: str, to_wallet: str,
                  amount: float, admin_key: str) -> dict:
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+            raise ValueError("amount must be a finite positive number")
+        try:
+            finite = math.isfinite(amount)
+        except (OverflowError, TypeError):
+            finite = False
+        if not finite or amount <= 0:
+            raise ValueError("amount must be a finite positive number")
         return self._post("/wallet/send", {
             "from_wallet": from_wallet,
             "to_wallet": to_wallet,
