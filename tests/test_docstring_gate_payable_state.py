@@ -129,5 +129,52 @@ class CommitPayableStateTests(unittest.TestCase):
         )
 
 
+class PayoutMarkerPaginationTests(unittest.TestCase):
+    def setUp(self):
+        self._gh = dg.gh
+        self._num = dg.NUM
+        dg.NUM = "current-claim"
+
+    def tearDown(self):
+        dg.gh = self._gh
+        dg.NUM = self._num
+
+    def test_marker_after_first_hundred_comments_counts_toward_weekly_total(self):
+        comment_pages = []
+
+        def fake_gh(args, default=None, strict=False):
+            del default, strict
+            if "search/issues" in args:
+                return {"items": [{"number": 77}]}
+            endpoint = next(
+                (arg for arg in args if "/issues/77/comments" in arg), None
+            )
+            if endpoint is not None:
+                page_arg = next(arg for arg in args if arg.startswith("page="))
+                page = int(page_arg.split("=", 1)[1])
+                comment_pages.append(page)
+                if page == 1:
+                    return [{"body": "ordinary comment"} for _ in range(100)]
+                if page == 2:
+                    return [{"body": "<!-- rtc-payout-amount: 39.5 -->"}]
+                self.fail(f"unexpected comment page {page}")
+            self.fail(f"unexpected gh args: {args}")
+
+        dg.gh = fake_gh
+
+        self.assertEqual(dg.docstring_rtc_this_week("alice"), 39.5)
+        self.assertEqual(comment_pages, [1, 2])
+
+    def test_non_list_comment_page_fails_closed(self):
+        def fake_gh(args, default=None, strict=False):
+            del args, default, strict
+            return {"unexpected": "shape"}
+
+        dg.gh = fake_gh
+
+        with self.assertRaises(dg.GhError):
+            dg.issue_comments(77)
+
+
 if __name__ == "__main__":
     unittest.main()
