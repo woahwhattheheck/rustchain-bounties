@@ -5,6 +5,7 @@ import importlib.util
 import os
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 os.environ.setdefault("GITHUB_TOKEN", "dummy")
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "docstring_gate.py"
@@ -26,6 +27,31 @@ class AdjudicatedStateTests(unittest.TestCase):
 
     def test_legacy_gate_processed_state_remains_terminal(self):
         self.assertTrue(dg.is_already_adjudicated({"gate-processed"}))
+
+
+class AddLabelsTests(unittest.TestCase):
+    def setUp(self):
+        self._run = dg.subprocess.run
+        self._num = dg.NUM
+        dg.NUM = "123"
+
+    def tearDown(self):
+        dg.subprocess.run = self._run
+        dg.NUM = self._num
+
+    def test_multiple_labels_share_one_rest_request(self):
+        calls = []
+
+        def fake_run(args, **_kwargs):
+            calls.append(args)
+            return SimpleNamespace(returncode=0, stderr="")
+
+        dg.subprocess.run = fake_run
+
+        self.assertTrue(dg.add_labels("bounty-eligible", "docstring-verified"))
+        self.assertEqual(len(calls), 1)
+        self.assertIn("labels[]=bounty-eligible", calls[0])
+        self.assertIn("labels[]=docstring-verified", calls[0])
 
 
 class CommitPayableStateTests(unittest.TestCase):
@@ -54,8 +80,7 @@ class CommitPayableStateTests(unittest.TestCase):
         dg.add_labels = record_labels
 
         self.assertFalse(dg.commit_payable_state(4.5))
-        self.assertNotIn(("bounty-eligible", "docstring-verified"), label_calls)
-        self.assertEqual(label_calls, [("needs-human",)])
+        self.assertEqual(label_calls, [])
 
     def test_marker_is_published_before_payable_labels(self):
         events = []
@@ -80,7 +105,7 @@ class CommitPayableStateTests(unittest.TestCase):
             ],
         )
 
-    def test_label_failure_holds_state_for_retry(self):
+    def test_label_failure_holds_state_for_retry_without_hold_label(self):
         events = []
 
         def record_marker(args):
@@ -89,19 +114,19 @@ class CommitPayableStateTests(unittest.TestCase):
 
         def fail_payable_labels(*names):
             events.append(("labels", names))
-            if names == ("bounty-eligible", "docstring-verified"):
-                return False
-            return True
+            return False
 
         dg.gh_raw = record_marker
         dg.add_labels = fail_payable_labels
 
         self.assertFalse(dg.commit_payable_state(2.0))
-        self.assertEqual(events[0], ("marker", "<!-- rtc-payout-amount: 2.0 -->"))
         self.assertEqual(
-            events[1], ("labels", ("bounty-eligible", "docstring-verified"))
+            events,
+            [
+                ("marker", "<!-- rtc-payout-amount: 2.0 -->"),
+                ("labels", ("bounty-eligible", "docstring-verified")),
+            ],
         )
-        self.assertEqual(events[2], ("labels", ("needs-human",)))
 
 
 if __name__ == "__main__":
