@@ -235,11 +235,9 @@ class RustChainClient:
                  amount: float, admin_key: str) -> dict:
         if isinstance(amount, bool) or not isinstance(amount, (int, float)):
             raise ValueError("amount must be a finite positive number")
-        try:
-            finite = math.isfinite(amount)
-        except (OverflowError, TypeError):
-            finite = False
-        if not finite or amount <= 0:
+        if isinstance(amount, float) and not math.isfinite(amount):
+            raise ValueError("amount must be a finite positive number")
+        if amount <= 0:
             raise ValueError("amount must be a finite positive number")
         return self._post("/wallet/send", {
             "from_wallet": from_wallet,
