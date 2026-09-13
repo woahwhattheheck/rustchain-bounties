@@ -304,7 +304,7 @@ def _unresolved(msg, quiet):
     comment(NUM, msg)
 
 def main():
-    iss=api(f"/repos/{REPO}/issues/{NUM}")
+    iss=api(f"/repos/{REPO}/issues/{NUM}", strict=True)
     if not iss or iss.get("state")!="open": return
     labels={l["name"] for l in iss.get("labels",[])}
     # Idempotency, with one deliberate exception.
