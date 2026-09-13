@@ -35,12 +35,15 @@ GITHUB_API = "https://api.github.com"
 VPS_PORT = 8099
 FROM_WALLET = "founder_community"
 
-# Payment directive pattern — matches both bold and plain variants:
+# Payment directive pattern — a directive is authority only when one complete
+# non-quoted, non-code line matches one of these forms exactly:
 #   **Payment: 75 RTC**
 #   **Payment: 75.5 RTC**
 #   Payment: 75 RTC
+# `parse_payment_directive()` deliberately uses fullmatch() rather than a
+# substring search so review prose cannot accidentally move money.
 PAYMENT_RE = re.compile(
-    r"\*{0,2}Payment:\s*([\d]+(?:\.[\d]+)?)\s*RTC\*{0,2}",
+    r"(?:\*\*)?Payment:\s*([\d]+(?:\.[\d]+)?)\s*RTC(?:\*\*)?",
     re.IGNORECASE,
 )
 
@@ -79,6 +82,38 @@ def is_already_paid_comment(body: str) -> bool:
     if ALREADY_PAID_MARKER not in b:
         return False
     return ALREADY_PAID_MARKER in b.replace(LEGACY_FAILED_MARKER, "")
+
+
+def parse_payment_directive(body: str):
+    """Return the last explicit payment directive in an owner comment.
+
+    Money-moving authority must be a standalone Markdown line. Text merely
+    discussing, rejecting, quoting, or showing `Payment: N RTC` as code is not
+    authority. Fenced-code and blockquote lines are ignored explicitly; inline
+    code cannot full-match the directive grammar because of its backticks.
+    """
+    if not isinstance(body, str):
+        return None
+
+    last_amount = None
+    fence = None
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+
+        if line.startswith("```"):
+            fence = None if fence == "```" else ("```" if fence is None else fence)
+            continue
+        if line.startswith("~~~"):
+            fence = None if fence == "~~~" else ("~~~" if fence is None else fence)
+            continue
+        if fence is not None or not line or line.startswith(">"):
+            continue
+
+        match = PAYMENT_RE.fullmatch(line)
+        if match:
+            last_amount = float(match.group(1))
+
+    return last_amount
 
 # ---------------------------------------------------------------------------
 # Conservative auto-tier (folded in from the former sophia-auto-approve.yml,
@@ -287,9 +322,9 @@ def main() -> None:
         if author.lower() != repo_owner.lower():
             continue
 
-        match = PAYMENT_RE.search(body)
-        if match:
-            payment_amount = float(match.group(1))
+        amount = parse_payment_directive(body)
+        if amount is not None:
+            payment_amount = amount
             payment_comment_id = c.get("id")
             print(f"Found payment directive: {payment_amount} RTC "
                   f"(comment {payment_comment_id} by {author})")
