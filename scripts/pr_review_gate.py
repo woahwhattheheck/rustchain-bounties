@@ -1,439 +1,181 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
+"""Fail-closed executable boundary for the PR-review bounty gate.
+
+The historical implementation remains byte-for-byte in
+``pr_review_gate_core.py``.  This entrypoint preserves its import surface while
+closing one money-path ambiguity: failure to read the claim itself must never
+look like a successful adjudication to ``pr_review_gate_backfill.py``.
+
+For an open review claim that was not already terminal, exit 0 now means the
+core produced an authoritative verdict (bounty-eligible, needs-human, or
+closed).  A silent/no-op return exits nonzero instead.
 """
-PR-Review Bounty Gate — on-arrival adjudication of Bounty #73 code-review claims.
+from __future__ import annotations
 
-Runs per newly-opened/edited issue. For a code-review claim it verifies, against
-the (public) Rustchain repo, that the claimant was the FIRST substantive reviewer
-of the referenced PR, within the per-contributor cap. Conservative:
-  - clear NOT-FIRST / rubber-stamp / over-cap  -> close (not planned) + comment
-  - eligible                                   -> label 'bounty-eligible' + comment
-  - ambiguous / no PR ref / non-native wallet  -> label 'needs-human' (no close)
-Idempotent: skips issues already labeled/closed by the gate.
+import importlib.util
+import os
+import sys
+from pathlib import Path
+from typing import Any, Callable
 
-Env: GITHUB_TOKEN (repo + public read), GH_REPO (owner/name), ISSUE_NUMBER,
-     TARGET_REPO (default Scottcjn/Rustchain), CAP (default 15), RATE_RTC (3).
-"""
-import os, re, json, sys, urllib.request, urllib.error
+_CORE_PATH = Path(__file__).with_name("pr_review_gate_core.py")
+_spec = importlib.util.spec_from_file_location("_pr_review_gate_core", _CORE_PATH)
+if _spec is None or _spec.loader is None:  # pragma: no cover - import machinery guard
+    raise ImportError(f"could not load {_CORE_PATH}")
+_core = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_core)
 
-TOKEN=os.environ.get("GITHUB_TOKEN","")
-REPO=os.environ.get("GH_REPO","Scottcjn/rustchain-bounties")
-TARGET=os.environ.get("TARGET_REPO","Scottcjn/Rustchain")
-NUM=os.environ.get("ISSUE_NUMBER","")
-CAP=int(os.environ.get("CAP","15")); RATE=os.environ.get("RATE_RTC","3")
-API="https://api.github.com"
+# Preserve the legacy import surface, including underscored helpers used by
+# existing zero-network tests.  Module identity fields stay owned by this
+# wrapper so direct execution still reaches the hardened main() below.
+_SKIP_EXPORTS = {
+    "__name__", "__file__", "__package__", "__loader__", "__spec__",
+    "__builtins__", "main",
+}
+for _name in dir(_core):
+    if _name not in _SKIP_EXPORTS:
+        globals()[_name] = getattr(_core, _name)
+
+_RUNTIME_CONFIG = ("TOKEN", "REPO", "TARGET", "NUM", "CAP", "RATE", "API")
+_VERDICT_LABELS = frozenset({"bounty-eligible", "needs-human"})
 
 
-class ApiError(RuntimeError):
-    """A GitHub API call failed. Must never be mistaken for an empty result."""
+def _sync_runtime_config() -> None:
+    """Propagate caller/test overrides from this compatibility module."""
+    for name in _RUNTIME_CONFIG:
+        if name in globals():
+            setattr(_core, name, globals()[name])
 
 
-def api(path, method="GET", data=None, strict=False):
-    """Call the GitHub API and parse JSON.
+def _label_names(issue: dict[str, Any]) -> set[str]:
+    raw = issue.get("labels")
+    if not isinstance(raw, list):
+        raise ApiError("claim detail labels must be a list")
+    labels: set[str] = set()
+    for item in raw:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+            raise ApiError("claim detail contains malformed label metadata")
+        labels.add(item["name"])
+    return labels
 
-    A failed GET normally returns None so callers can treat "not found" and
-    "could not read" the same way — fine for lookups where the fallback is
-    `needs-human`.
 
-    `strict=True` raises `ApiError` instead, and that matters wherever the
-    result feeds a MONEY decision. The per-contributor cap counted eligible
-    claims with `api("/search/issues?...") or {}`, so ANY failure — most
-    routinely a 403 secondary rate-limit, since /search/issues carries its
-    own 30 req/min budget separate from the REST quota — read back as
-    total_count 0, i.e. "this author has claimed nothing yet". The cap then
-    failed OPEN and approved past it at 3 RTC/claim, with no ceiling on how
-    many times that could repeat. A failed lookup is not an authoritative
-    zero. (Same defect and same remedy as `docstring_gate.gh(strict=True)`.)
-    """
-    req=urllib.request.Request(f"{API}{path}", method=method,
-        headers={"Authorization":f"Bearer {TOKEN}","Accept":"application/vnd.github+json",
-                 "X-GitHub-Api-Version":"2022-11-28","User-Agent":"pr-review-gate"})
-    if data is not None:
-        req.data=json.dumps(data).encode(); req.add_header("Content-Type","application/json")
+def _read_claim_strict(provider: Callable[..., Any]) -> tuple[dict[str, Any], str]:
+    """Read and shape-check the authoritative claim detail."""
+    claim_path = f"/repos/{REPO}/issues/{NUM}"
     try:
-        with urllib.request.urlopen(req,timeout=30) as r: return json.loads(r.read() or "null")
-    except urllib.error.HTTPError as e:
-        if strict: raise ApiError(f"{method} {path} -> HTTP {e.code}") from e
-        if method=="GET": return None
-        raise
-    except Exception as e:
-        # Transport/timeout/JSON failures. Non-strict callers keep the old
-        # behaviour (propagate to main's catch-all); strict callers get a
-        # typed error they can fail closed on.
-        if strict: raise ApiError(f"{method} {path} failed: {e.__class__.__name__}: {e}") from e
-        raise
-
-def is_review_claim(title):
-    t=title.lower()
-    return ("review" in t) and ("pr " in t or "code review" in t or "#73" in t or "pr#" in t or "pr #" in t)
-def pr_ref(title, body):
-    """Resolve the claimed PR as (repo_fullname_or_None, number_str_or_None).
-
-    Order matters: claim titles look like "Bounty #1009 claim: review of
-    PR #1396", so a bare '#N' scan grabs the BOUNTY number, not the PR
-    (2026-06-11 bug — 9 valid claims auto-rejected). Full PR URLs win,
-    then explicit 'PR #N'/'pull/N', and bare '#N' only as a last resort
-    with 'Bounty #N' references stripped first.
-    """
-    for s in (title, body or ""):
-        m = re.search(r'github\.com/([\w.-]+/[\w.-]+)/pull/(\d{1,6})', s)
-        if m: return m.group(1), m.group(2)
-    for s in (title, body or ""):
-        m = re.search(r'(?:\bPR\s*#?\s*|pull/)(\d{1,6})', s, re.IGNORECASE)
-        if m: return None, m.group(1)
-    for s in (title, body or ""):
-        stripped = re.sub(r'(?i)bounty\s*#\s*\d{1,6}', '', s)
-        m = re.search(r'#(\d{3,6})', stripped)
-        if m: return None, m.group(1)
-    return None, None
-
-def prose_repo(title, body):
-    """Candidate repo NAME when a claim names it in prose, not as a URL.
-
-    Claims are routinely written as "Code review bounty #73 for
-    rustchain-bounties PR #13434" or "Code Review - Scottcjn/rustchain-dialup
-    PR #4". pr_ref() only extracts a repo from a full github.com/<o>/<r>/pull/N
-    URL, so these resolve to (None, N) and the caller falls back to
-    TARGET_REPO. It then looks up a number that belongs to a DIFFERENT repo,
-    gets nothing, and files the claim as needs-human.
-
-    That is not a fringe case: on 2026-08-07 it accounted for 7 of the 13
-    unadjudicated claims that had to be paid out partially by hand.
-
-    Returns a bare repo name (no owner) or None. Deliberately does NOT verify
-    the repo exists -- the caller validates by attempting the lookup, so a
-    false positive costs one extra API call and nothing else.
-    """
-    for s in (title, body or ""):
-        if not s:
-            continue
-        # "owner/repo#123" or "owner/repo PR #123"
-        m = re.search(r'\b[\w.-]+/([\w.-]+?)\s*(?:#|\bPR\s*#?\s*)(\d{1,6})\b', s, re.I)
-        if m:
-            return m.group(1)
-        # "<repo-name> PR #123" -- require a hyphen or a known product prefix
-        # so ordinary words ("the PR #12", "this PR #12") cannot match.
-        m = re.search(r'\b((?:[\w.]+-[\w.-]+)|(?:rustchain|bottube|beacon|grazer)[\w.-]*)'
-                      r'\s+PR\s*#?\s*(\d{1,6})\b', s, re.I)
-        if m:
-            return m.group(1)
-    return None
-def native_wallet(body):
-    b=body or ""
-    if re.search(r'\bRTC[0-9a-fA-F]{40}\b', b) or re.search(r'(?i)miner[_\-]?id', b): return True
-    # Solana/ETH payout request = not native
-    if re.search(r'\b[1-9A-HJ-NP-Za-km-z]{32,44}\b', b) and "rtc" not in b.lower(): return False
-    return None  # unknown -> don't reject on this alone
-
-# Rubber-stamp detector (Bounty #73: "LGTM", generic praise, or emoji
-# reaction does not establish first-reviewer position). Bounty #73
-# explicitly states terse praise with no line-level findings does not
-# establish the first-reviewer slot. The helper logic lives in
-# is_substantive_review() below; this block only defines the phrase list
-# and the regex.
-#
-# Heuristic (intentionally narrow — only flags the obvious cases the
-# 2026-06-06 clarification on issue #73 calls out):
-#   1. Any review with >=1 inline comment is substantive (handled in
-#      is_substantive_review).
-#   2. Any review whose body is long enough to plausibly carry a finding
-#      (>=80 chars after stripping whitespace) is substantive (handled
-#      in is_substantive_review).
-#   3. Any review whose body contains a file path, a line reference
-#      like `L:NN`, a marker like "Ref:", "Finding", "Bug", "Issue:",
-#      "Security", "Risk", "Guard", or a Markdown code fence, is
-#      substantive (caught by _SUBSTANTIVE_MARKER_RE).
-#   4. Emoji-only bodies are rubber-stamps (caught by _EMOJI_ONLY_RE).
-#   5. Bodies that match the canonical "LGTM / great work / thanks"
-#      pattern with no other content are rubber-stamps (caught by
-#      _RUBBER_STAMP_RE). The pattern is anchored at the start (`^\s*`)
-#      but the trailing class only allows whitespace, non-word chars,
-#      and emoji, so a praise phrase that is immediately followed by
-#      substantive text (e.g. "Great work, but the file path is
-#      missing") will NOT match — _SUBSTANTIVE_MARKER_RE.search() will
-#      catch the file path above.
-
-# Substantive-marker regex. Used to detect file paths, line refs, and
-# finding keywords. Defined BEFORE the rubber-stamp regex so the
-# is_substantive_review helper can short-circuit: a body that contains
-# a marker is never rubber-stamp, even if it also starts with a praise
-# phrase.
-_SUBSTANTIVE_MARKER_RE = re.compile(
-    r"(?:"
-    r"\b(?:ref|refs|reference|finding|findings|bug|issue|risk|guard|"
-    r"security|vuln|vulnerability|regression|edge case|missing|broken|"
-    r"leak|panic|null|deref|injection|xss|csrf|race|deadlock|overflow)\b"
-    r"|"
-    r"`[^`]*\.[a-zA-Z0-9]{1,5}`"          # `path.ext`
-    r"|"
-    r"\b[a-zA-Z0-9_./-]+\.(?:py|js|ts|go|rs|java|kt|swift|c|cpp|h|hpp|"
-    r"md|yaml|yml|json|toml|sh|bash)\b"  # bare file path
-    r"|"
-    r"\bL:?\s*\d{1,4}\b"                  # L:123 or L 123 line ref
-    r"|"
-    r"\bline\s*\d{1,4}\b"                 # line 123
-    r"|"
-    r"```"                                # markdown code fence
-    r")",
-    re.IGNORECASE,
-)
-
-# A review body is rubber-stamp iff:
-#   (a) it is short (under 80 chars stripped), AND
-#   (b) it does NOT contain a substantive marker, AND
-#   (c) it starts with (or fully is) one of the canonical praise phrases.
-# This is the helper logic; see is_substantive_review() below. The
-# phrase list is small on purpose: a real review that starts with "Risk:"
-# or "Bug:" is filtered upstream by the substantive-marker check, not by
-# this list. The phrases here are the canonical "LGTM / great work /
-# thanks / appreciate" patterns plus the universal praise emoji.
-_RUBBER_STAMP_PHRASES = (
-    "lgtm", "lgtm!", "great work", "great contribution", "great work on this",
-    "nice work", "nice!", "nice job", "awesome", "awesome!",
-    "looks good", "looks great", "ship it", "shipit", "approved!",
-    "excellent", "excellent contribution", "appreciate", "appreciated",
-    "appreciate the work", "thanks", "thanks!", "thanks for", "thank you",
-    "thx", "thnx", "great pr", "great review", "great catch", "great find",
-    "good work", "good job", "well done", "wonderful", "fantastic", "amazing",
-)
-# Regex for "body is essentially just praise." The pattern matches if the
-# body STARTS with a praise phrase and is short enough that the rest of
-# the body cannot contain a substantive marker. Concretely: the body
-# must be <= 100 chars AND consist of (whitespace + praise phrase +
-# trailing punctuation/emoji/whitespace).
-_RUBBER_STAMP_RE = re.compile(
-    r"^\s*(?:" + "|".join(re.escape(p) for p in _RUBBER_STAMP_PHRASES) + r")"
-    r"[\s\W"
-    r"\U0001F300-\U0001FAFF"
-    r"\U0001F600-\U0001F64F"
-    r"\U0001F680-\U0001F6FF"
-    r"\U0001F1E0-\U0001F1FF"
-    r"\u2600-\u27BF"
-    r"]*$",
-    re.IGNORECASE | re.UNICODE,
-)
-# Emoji-only detector: any body that is purely emoji + whitespace +
-# non-word punctuation is a rubber-stamp, regardless of length. The
-# Bounty #73 source explicitly calls out "an emoji reaction" as not
-# establishing first-reviewer position.
-_EMOJI_ONLY_RE = re.compile(
-    r"^[\s\W"
-    r"\U0001F300-\U0001FAFF"                  # symbols + pictographs
-    r"\U0001F600-\U0001F64F"                  # emoticons
-    r"\U0001F680-\U0001F6FF"                  # transport
-    r"\U0001F1E0-\U0001F1FF"                  # flags
-    r"\u2600-\u27BF"                          # misc symbols + dingbats
-    r"]+$",
-    re.UNICODE,
-)
+        issue = provider(claim_path, strict=True)
+    except Exception as exc:
+        if isinstance(exc, ApiError):
+            raise
+        raise ApiError(
+            f"authoritative claim read failed: {exc.__class__.__name__}: {exc}"
+        ) from exc
+    if not isinstance(issue, dict):
+        raise ApiError("authoritative claim read returned no issue object")
+    if issue.get("state") not in {"open", "closed"}:
+        raise ApiError("claim detail has invalid or missing state")
+    if not isinstance(issue.get("title"), str):
+        raise ApiError("claim detail has invalid or missing title")
+    _label_names(issue)
+    return issue, claim_path
 
 
-def is_substantive_review(review, inline_count=0):
-    """Return True iff the review carries actionable, line-level findings.
+def main() -> int:
+    _sync_runtime_config()
+    provider = globals()["api"]
 
-    Order of checks matters. Bounty #73's 2026-06-06 clarification says
-    "LGTM", generic praise, and emoji reactions do not establish
-    first-reviewer position. A real review names a file/line and a
-    concrete issue or risk. The helper returns False (rubber-stamp) for
-    any review that fails every positive signal:
-
-      1. >= 1 inline (line-level) review comment          -> substantive
-      2. non-empty body whose first non-blank word is a
-         substantive marker (file path, line ref, "Ref:", "Bug:",
-         "Risk:", "Security", etc.)                      -> substantive
-      3. body length (stripped) >= 80 chars AND the body
-         is not pure emoji                                -> substantive
-      4. short body that is just praise + emoji           -> rubber-stamp
-      5. short body with no marker                        -> rubber-stamp
-         (Bounty #73 explicitly says terse praise without findings
-         is not substantive; default-deny matches the spec.)
-      6. empty body                                        -> rubber-stamp
-    """
-    if inline_count and inline_count > 0:
-        return True
-    body = (review.get("body") or "").strip()
-    if not body:
-        return False
-    # Substantive marker short-circuit: a body that names a file, line, or
-    # finding keyword is never a rubber-stamp, even if it ALSO starts with
-    # a praise phrase (e.g. "Great catch on the file path bug in
-    # `app/foo.py`" — kept).
-    if _SUBSTANTIVE_MARKER_RE.search(body):
-        return True
-    # Emoji-only body is always a rubber-stamp, regardless of length.
-    if _EMOJI_ONLY_RE.match(body):
-        return False
-    # Body starts with a praise phrase and is short: rubber-stamp.
-    # The regex's trailing class allows only whitespace, non-word chars,
-    # and emoji, so a praise phrase that is immediately followed by
-    # substantive text (e.g. "Great work, but the file path is missing")
-    # will NOT match this regex — `_SUBSTANTIVE_MARKER_RE.search` already
-    # caught the "file path" marker above.
-    if _RUBBER_STAMP_RE.match(body):
-        return False
-    # Long body without an explicit marker: presumed substantive (a
-    # real review with line-level findings usually exceeds 80 chars and
-    # the marker regex is intentionally narrow).
-    if len(body) >= 80:
-        return True
-    # Short body, no marker, not a praise phrase, not emoji-only. Default
-    # to rubber-stamp because Bounty #73 explicitly excludes terse
-    # praise. A borderline case like "Move this constant to a
-    # module-level enum" (30 chars, no marker) is also a rubber-stamp by
-    # this rule; reviewers with terse-but-real feedback should add a
-    # `Ref:` prefix or a file path to be sure.
-    return False
-
-
-def comment(n, body): api(f"/repos/{REPO}/issues/{n}/comments","POST",{"body":body})
-def add_label(n, lab): api(f"/repos/{REPO}/issues/{n}/labels","POST",{"labels":[lab]})
-def close(n, reason_comment):
-    comment(n, reason_comment); api(f"/repos/{REPO}/issues/{n}","PATCH",{"state":"closed","state_reason":"not_planned"})
-
-def _unresolved(msg, quiet):
-    """Flag a claim the gate could not decide.
-
-    On a RETRY_NEEDS_HUMAN pass the claim is ALREADY labelled and the claimant
-    has already been told. Re-commenting the same verdict every sweep would
-    turn a helpful retry into notification spam, so a retry that fails to
-    improve on the previous outcome exits without speaking.
-    """
-    if quiet:
-        return
-    add_label(NUM, "needs-human")
-    comment(NUM, msg)
-
-def main():
-    iss=api(f"/repos/{REPO}/issues/{NUM}")
-    if not iss or iss.get("state")!="open": return
-    labels={l["name"] for l in iss.get("labels",[])}
-    # Idempotency, with one deliberate exception.
-    #
-    # `bounty-eligible` means adjudicated and payable -- never touch it again.
-    # `gate-processed` alone means adjudicated cleanly -- likewise.
-    #
-    # `needs-human` means the OPPOSITE: the gate could not decide. Treating it
-    # as final made it a permanent dead end, so every later fix to this script
-    # stranded its own past victims. That is exactly what happened: claims
-    # gated before the 2026-06-11 pr_ref fix were told "couldn't read reviews
-    # for Scottcjn/Rustchain#<n>" because full PR URLs were not yet preferred,
-    # and they were never revisited after the fix landed. Seven such claims had
-    # to be settled by hand on 2026-08-07; at least three resolve cleanly
-    # against current code.
-    #
-    # With RETRY_NEEDS_HUMAN set, an unresolved claim is re-adjudicated. To
-    # avoid re-notifying people when nothing has changed, a retry that still
-    # cannot resolve exits SILENTLY (see `quiet` below) -- it comments only
-    # when the verdict actually improves.
-    retry = os.environ.get("RETRY_NEEDS_HUMAN", "") == "1"
-    quiet = False
-    if "bounty-eligible" in labels:
-        return
-    if "needs-human" in labels:
-        if not retry:
-            return
-        quiet = True            # only speak up if the outcome improves
-    elif "gate-processed" in labels:
-        return
-    title=iss.get("title",""); body=iss.get("body") or ""; author=iss["user"]["login"]
-    if not is_review_claim(title): return  # not our claim type; leave for other workflows
-    add_label(NUM,"gate-processed")
-    claim_repo, pr = pr_ref(title, body)
-    if not pr:
-        _unresolved("🤖 Gate: couldn't find a single PR reference. Per **Bounty #73**, file one claim per PR with `PR #<number>` (a full PR URL is best). Flagged for human review.", quiet); return
-    # Cross-repo claims: trust an explicit PR URL if it points at one of
-    # the maintainer's repos; anything else goes to a human. A repo named in
-    # prose is also a claimant statement, not a fallback hint: bind it before
-    # the first review lookup so a same-number PR in TARGET cannot win by
-    # coincidence.
-    target = TARGET
-    if claim_repo:
-        if claim_repo.lower().startswith(TARGET.split("/")[0].lower() + "/"):
-            target = claim_repo
-        else:
-            _unresolved(f"🤖 Gate: claim references a PR outside the maintainer's repos ({claim_repo}#{pr}). Flagged for human review.", quiet); return
-    else:
-        cand = prose_repo(title, body)
-        if cand:
-            target = f"{TARGET.split('/')[0]}/{cand}"
-    if native_wallet(body) is False:
-        close(NUM,"🤖 Gate: payout must be a **native RTC wallet** (`RTC…`) — RTC has no off-ramp, no Solana/ETH bridge. Reopen with a native wallet."); return
-    reviews=api(f"/repos/{target}/pulls/{pr}/reviews")
-    if reviews is None:
-        _unresolved(f"🤖 Gate: couldn't read reviews for {target}#{pr} (private/deleted?). Flagged for human review.", quiet); return
-    rv=[r for r in reviews if r.get("submitted_at")]
-    rv.sort(key=lambda r:r["submitted_at"])
-    inl = api(f"/repos/{target}/pulls/{pr}/comments?per_page=100") or []
-    # Per-author inline counts (so the rubber-stamp filter is per-review).
-    author_inline = {}
-    for c in inl:
-        login = (c.get("user") or {}).get("login")
-        if login:
-            author_inline[login] = author_inline.get(login, 0) + 1
-    # Filter out rubber-stamp reviews before picking the first substantive
-    # reviewer. If a review has no inline comments, run it through
-    # is_substantive_review(); if it has any inline comments, it is
-    # substantive by definition.
-    substantive = [r for r in rv if is_substantive_review(
-        r, inline_count=author_inline.get(r["user"]["login"], 0)
-    )]
-    first = substantive[0]["user"]["login"] if substantive else None
-    body_len = next((len(r.get("body") or "") for r in rv if r["user"]["login"]==author), 0)
-    inline = author_inline.get(author, 0)
-    if first != author:
-        close(NUM,f"🤖 Gate (Bounty #73 — first substantive review only): {target}#{pr} was first reviewed by **{first or 'someone else'}** (after filtering rubber-stamps), not @{author}. Path back: review PRs where you're the first reviewer."); return
-    if inline==0 and body_len<120:
-        close(NUM,f"🤖 Gate: your review of {target}#{pr} has no inline comments and no substantive summary — Bounty #73 requires a **substantive line-level review**, not a bare approval."); return
-    # cap check: count author's existing bounty-eligible issues ORG-WIDE
-    # (user:Scottcjn spans every repo, so the per-contributor cap stays global
-    # even though the gate now runs in both rustchain-bounties and Rustchain).
-    #
-    # This lookup is STRICT: if it cannot be completed the cap cannot be
-    # honoured, so the claim is held for a human rather than approved. See
-    # api(strict=True) for why a swallowed failure here reads as "zero
-    # claims so far" and lets the cap fail open.
     try:
-        elig=api(f"/search/issues?q=user:Scottcjn+label:bounty-eligible+author:{author}+type:issue",
-                 strict=True) or {}
-    except ApiError as e:
-        print(f"gate: cap lookup failed, refusing to approve: {e}", file=sys.stderr)
-        _unresolved(
-            f"🤖 Gate: your review of {target}#{pr} checks out, but the lookup that counts your "
-            f"existing eligible claims failed, so the **{CAP} eligible reviews/contributor** cap "
-            f"(Bounty #73) cannot be checked right now.\n\nHolding for a human rather than "
-            f"approving — a failed lookup is not proof that you are under the cap. Nothing is "
-            f"needed from you.", quiet)
-        return
-    if not isinstance(elig, dict) or "total_count" not in elig:
-        # A 200 with an unexpected shape is also not an authoritative zero.
-        print("gate: cap lookup returned unexpected shape, refusing to approve", file=sys.stderr)
-        _unresolved(
-            f"🤖 Gate: your review of {target}#{pr} checks out, but the cap lookup returned an "
-            f"unreadable response, so the **{CAP} eligible reviews/contributor** cap (Bounty #73) "
-            f"cannot be checked right now. Holding for a human.", quiet)
-        return
-    if elig.get("total_count",0)>=CAP:
-        close(NUM,f"🤖 Gate: @{author} has reached the **{CAP} eligible reviews/contributor** cap (Bounty #73). Quality over volume — thanks!"); return
-    add_label(NUM,"bounty-eligible")
-    comment(NUM,f"✅ 🤖 Gate: **verified eligible** — @{author} is the first substantive reviewer of {target}#{pr}. **{RATE} RTC** pending payout (native `RTC…` wallet if not on file).")
+        issue, claim_path = _read_claim_strict(provider)
+    except ApiError as exc:
+        print(f"gate preflight failed closed: {exc}", file=sys.stderr)
+        return 1
 
-if __name__=="__main__":
+    if issue["state"] != "open":
+        return 0
+    if not is_review_claim(issue["title"]):
+        return 0
+
+    initial_labels = _label_names(issue)
+    retry_needs_human = os.environ.get("RETRY_NEEDS_HUMAN", "") == "1"
+    if "bounty-eligible" in initial_labels or "gate-processed" in initial_labels:
+        return 0
+    if "needs-human" in initial_labels and not retry_needs_human:
+        return 0
+
+    replayed_claim = False
+    verdict_seen = False
+    original_core_api = _core.api
+
+    def tracked_api(path, method="GET", data=None, strict=False):
+        nonlocal replayed_claim, verdict_seen
+
+        # The strict preflight is the authoritative first claim read.  Replay
+        # it exactly once so the preserved core cannot perform the old
+        # non-strict GET that collapsed 403/429 into None.
+        if (
+            not replayed_claim
+            and method == "GET"
+            and data is None
+            and path == claim_path
+        ):
+            replayed_claim = True
+            return issue
+
+        result = provider(path, method=method, data=data, strict=strict)
+
+        # Count a verdict only after the mutation call has returned
+        # successfully.  `gate-processed` alone is intentionally insufficient:
+        # the core applies it before the final verdict.
+        if (
+            method == "POST"
+            and path == f"{claim_path}/labels"
+            and isinstance(data, dict)
+            and isinstance(data.get("labels"), list)
+            and _VERDICT_LABELS.intersection(data["labels"])
+        ):
+            verdict_seen = True
+        elif (
+            method == "PATCH"
+            and path == claim_path
+            and isinstance(data, dict)
+            and data.get("state") == "closed"
+        ):
+            verdict_seen = True
+        return result
+
+    _sync_runtime_config()
+    _core.api = tracked_api
     try:
-        main()
-    except Exception as e:
-        # Exit non-zero so the run is visibly red and can be retried.
-        #
-        # This used to swallow every exception ("never fail the workflow").
-        # add_label() re-raises on a failed POST, so when the label write at the
-        # eligible branch failed, it threw straight past the follow-up comment:
-        # the claim went unlabelled, the contributor was never told, and the run
-        # was green. That is the reported "gate green without applying payout
-        # labels" bug.
-        #
-        # A silent pass is the worst outcome for a payout gate — nothing
-        # downstream can tell a claim that was skipped from one that was
-        # adjudicated. Fail loudly instead.
-        import traceback
-        print(f"gate error: {type(e).__name__}: {e}", file=sys.stderr)
-        traceback.print_exc()
-        sys.exit(1)
+        result = _core.main()
+    except Exception as exc:
+        print(
+            f"gate adjudication failed closed: {exc.__class__.__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        _core.api = original_core_api
+
+    if result not in (None, 0):
+        try:
+            return int(result)
+        except (TypeError, ValueError):
+            print(f"gate returned invalid status: {result!r}", file=sys.stderr)
+            return 1
+
+    # A retry of a pre-existing needs-human verdict is authoritative even when
+    # the retry remains unresolved and intentionally emits no duplicate notice.
+    if verdict_seen or ("needs-human" in initial_labels and retry_needs_human):
+        return 0
+
+    print(
+        "gate failed closed: open review claim returned without an authoritative "
+        "bounty-eligible / needs-human / closed disposition",
+        file=sys.stderr,
+    )
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
