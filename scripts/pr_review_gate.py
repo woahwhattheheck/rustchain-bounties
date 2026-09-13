@@ -342,29 +342,23 @@ def main():
     if not pr:
         _unresolved("🤖 Gate: couldn't find a single PR reference. Per **Bounty #73**, file one claim per PR with `PR #<number>` (a full PR URL is best). Flagged for human review.", quiet); return
     # Cross-repo claims: trust an explicit PR URL if it points at one of
-    # the maintainer's repos; anything else goes to a human.
+    # the maintainer's repos; anything else goes to a human. A repo named in
+    # prose is also a claimant statement, not a fallback hint: bind it before
+    # the first review lookup so a same-number PR in TARGET cannot win by
+    # coincidence.
     target = TARGET
     if claim_repo:
         if claim_repo.lower().startswith(TARGET.split("/")[0].lower() + "/"):
             target = claim_repo
         else:
             _unresolved(f"🤖 Gate: claim references a PR outside the maintainer's repos ({claim_repo}#{pr}). Flagged for human review.", quiet); return
+    else:
+        cand = prose_repo(title, body)
+        if cand:
+            target = f"{TARGET.split('/')[0]}/{cand}"
     if native_wallet(body) is False:
         close(NUM,"🤖 Gate: payout must be a **native RTC wallet** (`RTC…`) — RTC has no off-ramp, no Solana/ETH bridge. Reopen with a native wallet."); return
     reviews=api(f"/repos/{target}/pulls/{pr}/reviews")
-    if reviews is None and not claim_repo:
-        # The default target was an assumption, not a statement by the
-        # claimant. Before giving up, honour a repo named in prose
-        # ("... for rustchain-bounties PR #13434"). Only reached when the
-        # assumed lookup already failed, so this can rescue a claim but can
-        # never redirect one that was resolving correctly.
-        cand = prose_repo(title, body)
-        if cand and cand.lower() != target.split("/")[1].lower():
-            owner = TARGET.split("/")[0]
-            alt = f"{owner}/{cand}"
-            alt_reviews = api(f"/repos/{alt}/pulls/{pr}/reviews")
-            if alt_reviews is not None:
-                target, reviews = alt, alt_reviews
     if reviews is None:
         _unresolved(f"🤖 Gate: couldn't read reviews for {target}#{pr} (private/deleted?). Flagged for human review.", quiet); return
     rv=[r for r in reviews if r.get("submitted_at")]
