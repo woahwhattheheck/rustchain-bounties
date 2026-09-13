@@ -1,12 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""The PR-review-gate backfill sweep must fail CLOSED and remain fair.
-
-`list_unprocessed()` must distinguish a genuinely empty repository from an API
-failure, malformed response, or truncated discovery set. Discovery paginates
-all open issues first; `MAX_PER_RUN` only bounds adjudication after the complete
-queue is known. Bounded scheduling must also advance across repeated runs so a
-permanently unresolved prefix cannot starve later contributors forever.
-"""
+"""Hostiles for the PR-review-gate backfill safety net."""
 import importlib.util
 import json
 import subprocess
@@ -26,8 +19,6 @@ def load_backfill():
 
 
 class FakeGate:
-    """Minimal stand-in for the gate module's is_review_claim() classifier."""
-
     @staticmethod
     def is_review_claim(title):
         return title.startswith("Bounty #73 claim")
@@ -43,10 +34,11 @@ def _completed(returncode, stdout="", stderr=""):
 
 
 def test_gh_nonzero_exit_fails_closed(monkeypatch):
-    """Issue enumeration failing with empty stdout must NOT read as zero claims."""
     mod = load_backfill()
     monkeypatch.setattr(
-        mod.subprocess, "run", lambda *a, **k: _completed(1, stdout="", stderr="HTTP 503")
+        mod.subprocess,
+        "run",
+        lambda *a, **k: _completed(1, stdout="", stderr="HTTP 503"),
     )
     with pytest.raises(SystemExit) as exc:
         mod.list_unprocessed(FakeGate())
@@ -54,111 +46,168 @@ def test_gh_nonzero_exit_fails_closed(monkeypatch):
 
 
 def test_malformed_json_on_success_fails_closed(monkeypatch):
-    """Exit 0 with truncated/garbage JSON must NOT read as zero claims."""
     mod = load_backfill()
-    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _completed(0, stdout="{"))
+    monkeypatch.setattr(
+        mod.subprocess, "run", lambda *a, **k: _completed(0, stdout="{")
+    )
     with pytest.raises(SystemExit) as exc:
         mod.list_unprocessed(FakeGate())
     assert exc.value.code == 1
 
 
 def test_unexpected_slurp_shape_fails_closed(monkeypatch):
-    """A mixed pagination shape must not be treated as a complete queue."""
     mod = load_backfill()
     payload = [[{"number": 1, "title": "x", "labels": []}], {"oops": True}]
     monkeypatch.setattr(
-        mod.subprocess, "run", lambda *a, **k: _completed(0, stdout=json.dumps(payload))
+        mod.subprocess,
+        "run",
+        lambda *a, **k: _completed(0, stdout=json.dumps(payload)),
     )
     with pytest.raises(SystemExit) as exc:
         mod.list_unprocessed(FakeGate())
     assert exc.value.code == 1
 
 
-def test_empty_issue_list_on_success_is_a_real_zero(monkeypatch):
-    """A genuine empty list on a zero exit is a real zero, not a failure."""
+def test_empty_issue_list_on_success_is_real_zero(monkeypatch):
     mod = load_backfill()
-    monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _completed(0, stdout="[]"))
-    never, stranded = mod.list_unprocessed(FakeGate())
-    assert never == []
-    assert stranded == []
+    monkeypatch.setattr(
+        mod.subprocess, "run", lambda *a, **k: _completed(0, stdout="[]")
+    )
+    assert mod.list_unprocessed(FakeGate()) == ([], [])
 
 
-def test_normal_path_partitions_claims(monkeypatch):
-    """The fix must not break normal classification of open claims."""
+def test_normal_path_partitions_and_retry_marker_retires_stranded(monkeypatch):
     mod = load_backfill()
     issues = [
-        {"number": 5, "title": "Bounty #73 claim: review of PR #100", "labels": []},
-        {"number": 6, "title": "Bounty #73 claim: review of PR #101",
-         "labels": [{"name": "needs-human"}]},
-        {"number": 7, "title": "Bounty #73 claim: review of PR #102",
-         "labels": [{"name": "bounty-eligible"}]},
-        {"number": 8, "title": "unrelated issue", "labels": []},
+        {
+            "number": 5,
+            "title": "Bounty #73 claim: review of PR #100",
+            "labels": [],
+        },
+        {
+            "number": 6,
+            "title": "Bounty #73 claim: review of PR #101",
+            "labels": [{"name": "needs-human"}, {"name": "gate-processed"}],
+        },
+        {
+            "number": 7,
+            "title": "Bounty #73 claim: review of PR #102",
+            "labels": [
+                {"name": "needs-human"},
+                {"name": "gate-processed"},
+                {"name": mod.RETRY_MARKER_LABEL},
+            ],
+        },
+        {
+            "number": 8,
+            "title": "Bounty #73 claim: review of PR #103",
+            "labels": [{"name": "bounty-eligible"}],
+        },
+        {"number": 9, "title": "unrelated issue", "labels": []},
     ]
     monkeypatch.setattr(
-        mod.subprocess, "run", lambda *a, **k: _completed(0, stdout=json.dumps(issues))
+        mod.subprocess,
+        "run",
+        lambda *a, **k: _completed(0, stdout=json.dumps(issues)),
     )
     never, stranded = mod.list_unprocessed(FakeGate())
     assert never == [5]
     assert stranded == [6]
 
 
-def test_slurped_pages_are_all_classified_and_pull_requests_are_excluded(monkeypatch):
-    """Discovery must flatten every REST page rather than silently cap at 1,000."""
+def test_slurped_pages_all_classified_and_pull_requests_excluded(monkeypatch):
     mod = load_backfill()
     pages = [
         [
-            {"number": 5, "title": "Bounty #73 claim: review of PR #100", "labels": []},
-            {"number": 55, "title": "Bounty #73 claim: review of PR #999", "labels": [],
-             "pull_request": {"url": "https://example.test/pr/55"}},
+            {
+                "number": 5,
+                "title": "Bounty #73 claim: review of PR #100",
+                "labels": [],
+            },
+            {
+                "number": 55,
+                "title": "Bounty #73 claim: review of PR #999",
+                "labels": [],
+                "pull_request": {"url": "https://example.test/pr/55"},
+            },
         ],
         [
-            {"number": 1005, "title": "Bounty #73 claim: review of PR #101",
-             "labels": [{"name": "needs-human"}]},
+            {
+                "number": 1005,
+                "title": "Bounty #73 claim: review of PR #101",
+                "labels": [{"name": "needs-human"}],
+            }
         ],
     ]
     monkeypatch.setattr(
-        mod.subprocess, "run", lambda *a, **k: _completed(0, stdout=json.dumps(pages))
+        mod.subprocess,
+        "run",
+        lambda *a, **k: _completed(0, stdout=json.dumps(pages)),
     )
-    never, stranded = mod.list_unprocessed(FakeGate())
-    assert never == [5]
-    assert stranded == [1005]
+    assert mod.list_unprocessed(FakeGate()) == ([5], [1005])
 
 
-def test_two_runs_reach_persistent_stranded_claim_beyond_first_max():
-    """A stable first batch cannot starve claim MAX+1 across repeated runs."""
+def test_dynamic_never_growth_cannot_suppress_stranded_retry():
+    """Exact rereview hostile: 120 new + one S still reserves S immediately."""
+    mod = load_backfill()
+    never = list(range(1, 121))
+    stranded = [9999]
+    batch_new, batch_retry = mod.select_batch(
+        never, stranded, max_per_run=60, run_number=1
+    )
+    assert len(batch_new) == 59
+    assert batch_retry == [9999]
+    assert len(batch_new) + len(batch_retry) == 60
+
+    next_never = list(range(121, 301))
+    next_stranded = [10000]
+    batch_new, batch_retry = mod.select_batch(
+        next_never, next_stranded, max_per_run=60, run_number=2
+    )
+    assert len(batch_new) == 59
+    assert batch_retry == [10000]
+
+
+def test_retry_marker_progress_reaches_claim_beyond_first_max():
+    """Selected stranded claims retire by marker, so MAX+1 advances next run."""
     mod = load_backfill()
     stranded = list(range(1, 62))
+    _, first = mod.select_batch([], stranded, max_per_run=60, run_number=0)
+    assert first == list(range(1, 61))
 
-    new0, retry0 = mod.select_batch([], stranded, max_per_run=60, run_number=0)
-    new1, retry1 = mod.select_batch([], stranded, max_per_run=60, run_number=1)
-
-    assert new0 == []
-    assert new1 == []
-    assert len(retry0) == 60
-    assert len(retry1) == 60
-    assert 61 not in retry0
-    assert 61 in retry1
-    assert set(retry0) | set(retry1) == set(stranded)
+    remaining = [number for number in stranded if number not in set(first)]
+    _, second = mod.select_batch([], remaining, max_per_run=60, run_number=1)
+    assert second == [61]
 
 
-def test_rotation_crosses_never_and_stranded_boundary():
-    """A full never-adjudicated prefix must not starve stranded retries forever."""
+def test_both_classes_get_reserved_capacity_when_cap_at_least_two():
     mod = load_backfill()
-    never = list(range(1, 61))
+    new, retry = mod.select_batch(
+        list(range(1, 61)), [1001, 1002], max_per_run=60, run_number=0
+    )
+    assert len(new) == 58
+    assert retry == [1001, 1002]
+    assert len(new) + len(retry) == 60
+
+
+def test_single_slot_alternates_classes():
+    mod = load_backfill()
+    never = [1, 2]
     stranded = [1001, 1002]
+    assert mod.select_batch(never, stranded, 1, 0) == ([1], [])
+    assert mod.select_batch(never, stranded, 1, 1) == ([], [1001])
+    assert mod.select_batch(never, stranded, 1, 2) == ([1], [])
 
-    new0, retry0 = mod.select_batch(never, stranded, max_per_run=60, run_number=0)
-    new1, retry1 = mod.select_batch(never, stranded, max_per_run=60, run_number=1)
 
-    assert new0 == never
-    assert retry0 == []
-    assert retry1 == stranded
-    assert len(new1) == 58
-    assert set(new0 + retry0 + new1 + retry1) >= set(stranded)
+def test_unused_capacity_spills_to_other_class():
+    mod = load_backfill()
+    new, retry = mod.select_batch([1], list(range(100, 110)), 6, 0)
+    assert new == [1]
+    assert len(retry) == 5
+    assert len(new) + len(retry) == 6
 
 
 def test_nonpositive_max_per_run_is_rejected():
-    """Zero/negative bounds must fail closed rather than trigger slice surprises."""
     mod = load_backfill()
     with pytest.raises(ValueError, match="MAX_PER_RUN must be > 0"):
         mod.select_batch([1], [2], max_per_run=0, run_number=1)
@@ -166,22 +215,91 @@ def test_nonpositive_max_per_run_is_rejected():
         mod.select_batch([1], [2], max_per_run=-1, run_number=1)
 
 
+def test_invalid_actions_run_number_is_rejected(monkeypatch):
+    mod = load_backfill()
+    monkeypatch.setenv("GITHUB_RUN_NUMBER", "not-an-int")
+    with pytest.raises(ValueError, match="GITHUB_RUN_NUMBER must be an integer"):
+        mod._rotation_run_number()
+
+
 def test_main_rejects_nonpositive_max_before_discovery(monkeypatch):
-    """Runtime config validation must stop before any issue enumeration/mutation."""
     mod = load_backfill()
     monkeypatch.setattr(mod, "MAX_PER_RUN", 0)
     monkeypatch.delenv("GITHUB_RUN_NUMBER", raising=False)
 
     def should_not_load_gate():
-        raise AssertionError("invalid config must fail before loading/discovering claims")
+        raise AssertionError("invalid config must fail before loading claims")
 
     monkeypatch.setattr(mod, "_load_gate", should_not_load_gate)
     assert mod.main() == 2
 
 
-def test_invalid_actions_run_number_is_rejected(monkeypatch):
-    """A malformed durable rotation seed must fail closed, not silently reset."""
+def test_retry_marker_is_persisted_before_retry_adjudication(monkeypatch):
     mod = load_backfill()
-    monkeypatch.setenv("GITHUB_RUN_NUMBER", "not-an-int")
-    with pytest.raises(ValueError, match="GITHUB_RUN_NUMBER must be an integer"):
-        mod._rotation_run_number()
+    events = []
+    monkeypatch.setattr(mod, "_load_gate", lambda: FakeGate())
+    monkeypatch.setattr(mod, "list_unprocessed", lambda gate: ([], [1001]))
+    monkeypatch.setattr(mod, "ensure_retry_marker_label", lambda: True)
+
+    def mark(number):
+        events.append(("mark", number))
+        return True
+
+    def adjudicate(number, retry=False):
+        events.append(("adjudicate", number, retry))
+        return True
+
+    monkeypatch.setattr(mod, "mark_retry_attempt", mark)
+    monkeypatch.setattr(mod, "adjudicate", adjudicate)
+    monkeypatch.setattr(mod, "MAX_PER_RUN", 60)
+    monkeypatch.setenv("GITHUB_RUN_NUMBER", "3")
+
+    assert mod.main() == 0
+    assert events == [
+        ("mark", 1001),
+        ("adjudicate", 1001, True),
+    ]
+
+
+def test_marker_write_failure_blocks_retry_and_fails_run(monkeypatch):
+    mod = load_backfill()
+    monkeypatch.setattr(mod, "_load_gate", lambda: FakeGate())
+    monkeypatch.setattr(mod, "list_unprocessed", lambda gate: ([], [1001]))
+    monkeypatch.setattr(mod, "ensure_retry_marker_label", lambda: True)
+    monkeypatch.setattr(mod, "mark_retry_attempt", lambda number: False)
+    monkeypatch.setattr(
+        mod,
+        "adjudicate",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("gate must not run without durable marker")
+        ),
+    )
+    monkeypatch.setattr(mod, "MAX_PER_RUN", 60)
+    monkeypatch.setenv("GITHUB_RUN_NUMBER", "4")
+
+    assert mod.main() == 1
+
+
+def test_retry_label_creation_failure_fails_without_adjudication(monkeypatch):
+    mod = load_backfill()
+    monkeypatch.setattr(mod, "_load_gate", lambda: FakeGate())
+    monkeypatch.setattr(mod, "list_unprocessed", lambda gate: ([], [1001, 1002]))
+    monkeypatch.setattr(mod, "ensure_retry_marker_label", lambda: False)
+    monkeypatch.setattr(
+        mod,
+        "mark_retry_attempt",
+        lambda number: (_ for _ in ()).throw(
+            AssertionError("no marker writes after label setup failure")
+        ),
+    )
+    monkeypatch.setattr(
+        mod,
+        "adjudicate",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError("no gate runs after label setup failure")
+        ),
+    )
+    monkeypatch.setattr(mod, "MAX_PER_RUN", 60)
+    monkeypatch.setenv("GITHUB_RUN_NUMBER", "5")
+
+    assert mod.main() == 1
