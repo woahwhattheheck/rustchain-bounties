@@ -4,9 +4,95 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from rustchain_mcp import server
 
 
 MCP_ROOT = Path(__file__).resolve().parents[1]
+
+
+class TransferAmountTests(unittest.TestCase):
+    def test_invalid_transfer_amounts_fail_before_wallet_post(self):
+        client = server.RustChainClient("https://example.invalid")
+        arguments = {
+            "from_wallet": "source",
+            "to_wallet": "destination",
+            "admin_key": "test-key",
+        }
+        with patch.object(client, "_post") as post, patch.object(server, "_client", client):
+            for amount in (float("nan"), float("inf"), float("-inf"), 0, -1, True, "1"):
+                with self.subTest(amount=amount):
+                    result = server.handle_tool("rustchain_transfer", {**arguments, "amount": amount})
+                    self.assertFalse(result["ok"])
+                    self.assertIn("finite positive number", result["error"])
+            post.assert_not_called()
+
+    def test_positive_finite_transfer_amount_reaches_wallet_post_unchanged(self):
+        client = server.RustChainClient("https://example.invalid")
+        with patch.object(client, "_post", return_value={"ok": True}) as post, patch.object(server, "_client", client):
+            result = server.handle_tool("rustchain_transfer", {
+                "from_wallet": "source",
+                "to_wallet": "destination",
+                "amount": 1.25,
+                "admin_key": "test-key",
+            })
+        self.assertEqual({"ok": True}, result)
+        post.assert_called_once_with("/wallet/send", {
+            "from_wallet": "source",
+            "to_wallet": "destination",
+            "amount": 1.25,
+            "admin_key": "test-key",
+        })
+
+
+class QueryArgumentValidationTests(unittest.TestCase):
+    def test_schema_declares_query_argument_constraints(self):
+        tools = {tool["name"]: tool for tool in server.MCP_TOOL_SCHEMA["tools"]}
+        self.assertEqual(
+            1,
+            tools["rustchain_miners"]["inputSchema"]["properties"]["limit"]["minimum"],
+        )
+        bounty_properties = tools["rustchain_bounties"]["inputSchema"]["properties"]
+        self.assertEqual(1, bounty_properties["limit"]["minimum"])
+        self.assertEqual(["open", "closed", "all"], bounty_properties["status"]["enum"])
+
+    def test_invalid_miner_limits_fail_before_get(self):
+        client = server.RustChainClient("https://example.invalid")
+        with patch.object(client, "_get") as get, patch.object(server, "_client", client):
+            for limit in (0, -1, True, 1.5, "2", None):
+                with self.subTest(limit=limit):
+                    result = server.handle_tool("rustchain_miners", {"limit": limit})
+                    self.assertFalse(result["ok"])
+                    self.assertIn("positive integer", result["error"])
+            get.assert_not_called()
+
+    def test_invalid_bounty_status_or_limit_fails_before_get(self):
+        client = server.RustChainClient("https://example.invalid")
+        cases = (
+            {"status": "pending", "limit": 20},
+            {"status": 7, "limit": 20},
+            {"status": "open", "limit": 0},
+            {"status": "all", "limit": True},
+        )
+        with patch.object(client, "_get") as get, patch.object(server, "_client", client):
+            for arguments in cases:
+                with self.subTest(arguments=arguments):
+                    result = server.handle_tool("rustchain_bounties", arguments)
+                    self.assertFalse(result["ok"])
+            get.assert_not_called()
+
+    def test_valid_query_arguments_reach_get_unchanged(self):
+        client = server.RustChainClient("https://example.invalid")
+        with patch.object(client, "_get", return_value={"ok": True}) as get, patch.object(server, "_client", client):
+            self.assertEqual({"ok": True}, server.handle_tool("rustchain_miners", {"limit": 7}))
+            get.assert_called_once_with("/miners/list", {"limit": 7})
+            get.reset_mock()
+            self.assertEqual(
+                {"ok": True},
+                server.handle_tool("rustchain_bounties", {"status": "closed", "limit": 9}),
+            )
+            get.assert_called_once_with("/bounties/list", {"status": "closed", "limit": 9})
 
 
 class StdioProtocolTests(unittest.TestCase):

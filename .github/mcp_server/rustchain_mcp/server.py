@@ -11,9 +11,12 @@ Or with uvx:
 
 import os
 import json
+import math
 import urllib.request
 import urllib.error
 from typing import Any, Optional
+
+BOUNTY_STATUSES = frozenset({"open", "closed", "all"})
 
 # MCP Protocol Types
 MCP_TOOL_SCHEMA = {
@@ -49,6 +52,7 @@ MCP_TOOL_SCHEMA = {
                 "properties": {
                     "limit": {
                         "type": "integer",
+                        "minimum": 1,
                         "description": "Max miners to return (default 20)",
                         "default": 20
                     }
@@ -105,11 +109,13 @@ MCP_TOOL_SCHEMA = {
                 "properties": {
                     "status": {
                         "type": "string",
+                        "enum": ["open", "closed", "all"],
                         "description": "Filter by status: open, closed, all",
                         "default": "open"
                     },
                     "limit": {
                         "type": "integer",
+                        "minimum": 1,
                         "description": "Max bounties to return (default 20)",
                         "default": 20
                     }
@@ -133,6 +139,7 @@ MCP_TOOL_SCHEMA = {
                     },
                     "amount": {
                         "type": "number",
+                        "exclusiveMinimum": 0,
                         "description": "Amount of RTC to transfer"
                     },
                     "admin_key": {
@@ -145,6 +152,18 @@ MCP_TOOL_SCHEMA = {
         }
     ]
 }
+
+
+def _validate_limit(limit: Any) -> int:
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise ValueError("limit must be a positive integer")
+    return limit
+
+
+def _validate_bounty_status(status: Any) -> str:
+    if not isinstance(status, str) or status not in BOUNTY_STATUSES:
+        raise ValueError("status must be one of: open, closed, all")
+    return status
 
 
 class RustChainClient:
@@ -191,6 +210,7 @@ class RustChainClient:
         return self._get("/wallet/balance", {"miner_id": miner_id})
 
     def miners(self, limit: int = 20) -> dict:
+        limit = _validate_limit(limit)
         result = self._get("/miners/list", {"limit": limit})
         return result
 
@@ -207,10 +227,20 @@ class RustChainClient:
         })
 
     def bounties(self, status: str = "open", limit: int = 20) -> dict:
+        status = _validate_bounty_status(status)
+        limit = _validate_limit(limit)
         return self._get("/bounties/list", {"status": status, "limit": limit})
 
     def transfer(self, from_wallet: str, to_wallet: str,
                  amount: float, admin_key: str) -> dict:
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)):
+            raise ValueError("amount must be a finite positive number")
+        try:
+            finite = math.isfinite(amount)
+        except (OverflowError, TypeError):
+            finite = False
+        if not finite or amount <= 0:
+            raise ValueError("amount must be a finite positive number")
         return self._post("/wallet/send", {
             "from_wallet": from_wallet,
             "to_wallet": to_wallet,
