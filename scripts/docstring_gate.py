@@ -70,6 +70,7 @@ COUNT_RE = re.compile(
     re.I)
 FILE_RE = re.compile(r'(?:^|\s)((?:[\w.-]+/)*[\w.-]+\.py)\b')
 DOCSTRING_OPEN = re.compile(r'^\s*[rRbBuU]{0,2}("""|\'\'\')')
+PAYABLE_LABELS = frozenset({"bounty-eligible", "docstring-verified"})
 
 
 class GhError(RuntimeError):
@@ -115,24 +116,81 @@ def gh_raw(args):
 
 
 def add_labels(*names):
-    """Apply labels via REST.
+    """Apply one or more labels in a single REST request.
 
     `gh issue edit --add-label` goes through GraphQL and currently fails with a
-    Projects-classic deprecation error -- and it fails SILENTLY, so the gate
-    would post "verified" while never marking the claim eligible, and the payout
-    runner would never see it. Verified by observing an adjudicated claim come
-    back with `labels: []`.
+    Projects-classic deprecation error. Use REST instead. When several labels
+    form one state transition, submit them together so the client never creates
+    a deliberate one-label intermediate state across separate requests.
     """
-    ok = True
-    for n in names:
-        r = subprocess.run(["gh", "api", "-X", "POST",
-                            f"/repos/{REPO}/issues/{NUM}/labels", "-f", f"labels[]={n}"],
-                           capture_output=True, text=True, timeout=60)
-        if r.returncode != 0:
-            print(f"::warning::could not apply label {n}: {r.stderr.strip()[:120]}")
-            ok = False
-    return ok
+    if not names:
+        return True
+    args = ["gh", "api", "-X", "POST", f"/repos/{REPO}/issues/{NUM}/labels"]
+    for name in names:
+        args.extend(["-f", f"labels[]={name}"])
+    r = subprocess.run(args, capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        print(
+            f"::warning::could not apply label(s) {', '.join(names)}: "
+            f"{r.stderr.strip()[:120]}"
+        )
+        return False
+    return True
 
+
+def is_already_adjudicated(labels):
+    """Return true only for a complete payable state or an older terminal gate."""
+    labels = set(labels)
+    return "gate-processed" in labels or PAYABLE_LABELS <= labels
+
+
+def commit_payable_state(amount):
+    """Publish the trusted amount before making a claim payable.
+
+    The payer requires both the `docstring-verified` label and a trusted amount
+    marker. Publishing labels first used to let a failed comment write strand a
+    claim forever: the gate returned success, the payer had no amount, and later
+    gate sweeps skipped the already-labelled claim. Keep a failure retryable by
+    publishing the marker first and treating the two labels as the commit step.
+    """
+    marker = f"<!-- rtc-payout-amount: {amount} -->"
+    try:
+        # `gh issue comment` writes plain CLI output, not JSON. gh_raw() is the
+        # strict helper for this operation: non-zero status raises immediately.
+        gh_raw(["issue", "comment", NUM, "-R", REPO, "--body", marker])
+    except GhError as e:
+        # Do not add `needs-human`: the scheduled fresh-claim sweep excludes it.
+        # With no payable labels written yet, leaving the claim untouched is what
+        # makes the transient publication failure automatically retryable.
+        print(f"::error::trusted payout marker was not published on {REPO}#{NUM}: {e}")
+        return False
+
+    if not add_labels("bounty-eligible", "docstring-verified"):
+        # A marker without the payable labels is inert: the payout runner and
+        # weekly-cap query both require docstring-verified. Do not add a hold
+        # label which would exclude this claim from the scheduled retry sweep.
+        print(f"::error::payable labels not applied on {REPO}#{NUM}; held for retry")
+        return False
+    return True
+
+
+
+def issue_comments(issue_number):
+    """Return all issue comments; incomplete pagination is a money-gate error."""
+    comments = []
+    page = 1
+    while True:
+        batch = gh(["api", "-X", "GET",
+                    f"/repos/{REPO}/issues/{issue_number}/comments",
+                    "-f", "per_page=100", "-f", f"page={page}"], None, strict=True)
+        if not isinstance(batch, list):
+            raise GhError(f"comments page {page} for {REPO}#{issue_number} is not a list")
+        if len(batch) > 100:
+            raise GhError(f"comments page {page} for {REPO}#{issue_number} exceeds per_page=100")
+        comments.extend(batch)
+        if len(batch) < 100:
+            return comments
+        page += 1
 
 
 def docstring_rtc_this_week(author):
@@ -151,9 +209,9 @@ def docstring_rtc_this_week(author):
     for it in (res.get("items") or []):
         if str(it.get("number")) == str(NUM):
             continue          # never count the claim being adjudicated
-        body = it.get("body") or ""
-        # The marker lives in a gate comment, not the issue body, so fetch them.
-        cs = gh(["api", f"/repos/{REPO}/issues/{it['number']}/comments?per_page=100"], [], strict=True) or []
+        # The marker lives in a gate comment, not the issue body. A marker after
+        # comment 100 is still authoritative payout state, so scan every page.
+        cs = issue_comments(it["number"])
         for c in cs:
             m = re.search(r'<!--\s*rtc-payout-amount:\s*([\d.]+)\s*-->', c.get("body") or "")
             if m:
@@ -212,7 +270,7 @@ def main():
         print(f"could not read {REPO}#{NUM}", file=sys.stderr)
         return 1
     labels = {l["name"] for l in iss.get("labels", [])}
-    if {"bounty-eligible", "docstring-verified", "gate-processed"} & labels:
+    if is_already_adjudicated(labels):
         print("already adjudicated; skipping")
         return 0
     title, body = iss.get("title", ""), iss.get("body") or ""
@@ -312,28 +370,22 @@ def main():
                 f"Paying the verified number. If you think the gate has miscounted, say so and a "
                 f"human will check — miscounts are usually arithmetic, not bad faith.")
 
-    # Fail closed (#16471, reported by @antoleod 2026-09-04): add_labels() reports
-    # REST label failures, but this caller used to discard that and announce
-    # "verified" anyway. The payout sweep keys off the labels, so a claim could be
-    # publicly verified and never paid. Hold instead, and exit non-zero so the run
-    # is red and the next sweep retries.
-    if not add_labels("bounty-eligible", "docstring-verified"):
+    if not commit_payable_state(amount):
+        # Notification is deliberately secondary to durable state. If even this
+        # status comment fails, the red run + retryable labels still prevent a
+        # false-success terminal state.
         gh(["issue", "comment", NUM, "-R", REPO, "--body",
-            f"⏸️ 🤖 **Docstring gate: checks passed, but the payable labels could not be applied** "
-            f"(GitHub label API error), so this is **held**, not verified. PR {pr_repo}#{pr_num} is "
-            f"merged with **{doc_count}** docstrings → **{amount} RTC** once a human or the next "
-            f"sweep applies `bounty-eligible` + `docstring-verified`. Nothing is wrong with the "
-            f"claim; the gate is refusing to say 'verified' about a state it did not create."], None)
-        add_labels("needs-human")
-        print(f"::error::labels not applied on {REPO}#{NUM}; held, not verified")
+            f"⏸️ 🤖 **Docstring gate: checks passed, but payable state was not fully committed.** "
+            f"PR {pr_repo}#{pr_num} is merged with **{doc_count}** docstrings → **{amount} RTC**. "
+            f"The gate is holding this claim for retry rather than reporting it as verified."], None)
         return 1
+
     gh(["issue", "comment", NUM, "-R", REPO, "--body",
         f"✅ 🤖 **Docstring gate: verified.**\n\n"
         f"- PR {pr_repo}#{pr_num} is **merged**\n"
         f"- Files: `{', '.join(files[:4]) or 'n/a'}`\n"
         f"- Added lines opening a docstring: **{doc_count}** (of {total_added} added lines)\n"
         f"- Rate {RATE} RTC each → **{amount} RTC**{note}\n\n"
-        f"<!-- rtc-payout-amount: {amount} -->\n"
         f"Queued for payout. The balance moves after the standard confirmation window, not on this "
         f"comment."], None)
     print(f"verified {doc_count} docstrings -> {amount} RTC on {REPO}#{NUM}")
