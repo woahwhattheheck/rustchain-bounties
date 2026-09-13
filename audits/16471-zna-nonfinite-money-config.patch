@@ -1,0 +1,81 @@
+diff --git a/scripts/bounty_payout.py b/scripts/bounty_payout.py
+index fbbfbf2..0000000 100755
+--- a/scripts/bounty_payout.py
++++ b/scripts/bounty_payout.py
+@@ -20,7 +20,8 @@ Env: GITHUB_TOKEN, RTC_ADMIN_KEY, RTC_VPS_HOST, GH_REPO, RATE_RTC(3), MAX_PER_RU
+ """
+-import os, re, json, time, subprocess, ssl, urllib.request, urllib.error, importlib.util
++import math
++import os, re, json, time, subprocess, ssl, urllib.request, urllib.error, importlib.util
+ 
+ def _load_second_act():
+@@ -42,10 +43,23 @@ def _load_second_act():
+ 
+ _second_act = _load_second_act()
++
++def _positive_finite_env(name, default):
++    """Parse a money-bearing env value and fail closed before any side effect."""
++    raw = os.environ.get(name, default)
++    try:
++        value = float(raw)
++    except (TypeError, ValueError) as exc:
++        raise SystemExit(f"{name} must be a finite positive number") from exc
++    if not math.isfinite(value) or value <= 0:
++        raise SystemExit(f"{name} must be a finite positive number")
++    return value
++
+ TOKEN=os.environ["GITHUB_TOKEN"]; ADMIN=os.environ["RTC_ADMIN_KEY"]
+ HOST=os.environ.get("RTC_VPS_HOST","50.28.86.131"); REPO=os.environ.get("GH_REPO","Scottcjn/rustchain-bounties")
+-RATE=float(os.environ.get("RATE_RTC","3"))
++RATE=_positive_finite_env("RATE_RTC","3")
+ # Hard ceiling re-enforced at payout time, independent of any gate.
+-MAX_CLAIM_RTC=float(os.environ.get("MAX_CLAIM_RTC","25")); MAXRUN=int(os.environ.get("MAX_PER_RUN","40"))
++MAX_CLAIM_RTC=_positive_finite_env("MAX_CLAIM_RTC","25"); MAXRUN=int(os.environ.get("MAX_PER_RUN","40"))
+ FROM="founder_community"; PORT="8099"
+ WALLET_RE=re.compile(r'\bRTC[0-9a-fA-F]{40}\b')
+diff --git a/scripts/docstring_gate.py b/scripts/docstring_gate.py
+index 825c98d..0000000 100755
+--- a/scripts/docstring_gate.py
++++ b/scripts/docstring_gate.py
+@@ -34,13 +34,27 @@ Sets `bounty-eligible` + `docstring-verified` and posts the arithmetic, so the
+ """
+ from __future__ import annotations
+ 
+ import datetime
+ import json
++import math
+ import os
+ import re
+ import subprocess
+ import sys
+ 
++def _positive_finite_env(name, default):
++    """Parse a money-bearing env value and fail closed before any side effect."""
++    raw = os.environ.get(name, default)
++    try:
++        value = float(raw)
++    except (TypeError, ValueError) as exc:
++        raise SystemExit(f"{name} must be a finite positive number") from exc
++    if not math.isfinite(value) or value <= 0:
++        raise SystemExit(f"{name} must be a finite positive number")
++    return value
++
+ REPO = os.environ.get("GH_REPO", "Scottcjn/rustchain-bounties")
+ NUM = os.environ.get("ISSUE_NUMBER", "")
+-RATE = float(os.environ.get("RATE_PER_FUNC", "0.01"))
++RATE = _positive_finite_env("RATE_PER_FUNC", "0.01")
+ # A single claim asking for more than this is not auto-payable. Docstring work
+ # is small by nature; a very large claim is either a mistake or something that
+ # deserves a human read.
+-MAX_RTC = float(os.environ.get("MAX_RTC", "25"))
++MAX_RTC = _positive_finite_env("MAX_RTC", "25")
+ # Per-contributor rolling weekly ceiling on DOCSTRING earnings specifically.
+ #
+@@ -60,7 +74,7 @@ MAX_RTC = float(os.environ.get("MAX_RTC", "25"))
+ #
+ # This applies ONLY to docstring claims. Large one-off bounties are untouched.
+-MAX_RTC_PER_WEEK = float(os.environ.get("MAX_RTC_PER_WEEK", "40"))
++MAX_RTC_PER_WEEK = _positive_finite_env("MAX_RTC_PER_WEEK", "40")
+ 
+ PR_RE = re.compile(r'github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)')
+ COUNT_RE = re.compile(
