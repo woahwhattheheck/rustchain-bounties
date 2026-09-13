@@ -312,30 +312,44 @@ def main():
                 f"Paying the verified number. If you think the gate has miscounted, say so and a "
                 f"human will check — miscounts are usually arithmetic, not bad faith.")
 
-    # Fail closed (#16471, reported by @antoleod 2026-09-04): add_labels() reports
-    # REST label failures, but this caller used to discard that and announce
-    # "verified" anyway. The payout sweep keys off the labels, so a claim could be
-    # publicly verified and never paid. Hold instead, and exit non-zero so the run
-    # is red and the next sweep retries.
-    if not add_labels("bounty-eligible", "docstring-verified"):
-        gh(["issue", "comment", NUM, "-R", REPO, "--body",
-            f"⏸️ 🤖 **Docstring gate: checks passed, but the payable labels could not be applied** "
-            f"(GitHub label API error), so this is **held**, not verified. PR {pr_repo}#{pr_num} is "
-            f"merged with **{doc_count}** docstrings → **{amount} RTC** once a human or the next "
-            f"sweep applies `bounty-eligible` + `docstring-verified`. Nothing is wrong with the "
-            f"claim; the gate is refusing to say 'verified' about a state it did not create."], None)
-        add_labels("needs-human")
-        print(f"::error::labels not applied on {REPO}#{NUM}; held, not verified")
-        return 1
-    gh(["issue", "comment", NUM, "-R", REPO, "--body",
-        f"✅ 🤖 **Docstring gate: verified.**\n\n"
+    # Settlement state is two-part: the payout runner needs BOTH a trusted
+    # rtc-payout-amount marker and the payable labels. Persist the marker first.
+    # If that write fails, adding terminal labels would make the next sweep skip
+    # the claim forever while bounty_payout.py sees no amount and also skips it.
+    marker_body = (
+        f"✅ 🤖 **Docstring gate: verification recorded.**\n\n"
         f"- PR {pr_repo}#{pr_num} is **merged**\n"
         f"- Files: `{', '.join(files[:4]) or 'n/a'}`\n"
         f"- Added lines opening a docstring: **{doc_count}** (of {total_added} added lines)\n"
         f"- Rate {RATE} RTC each → **{amount} RTC**{note}\n\n"
         f"<!-- rtc-payout-amount: {amount} -->\n"
-        f"Queued for payout. The balance moves after the standard confirmation window, not on this "
-        f"comment."], None)
+        f"The payout amount record is durable; committing the payable labels next."
+    )
+    try:
+        gh(["issue", "comment", NUM, "-R", REPO, "--body", marker_body], None, strict=True)
+    except GhError as e:
+        print(f"::error::payout amount marker not persisted on {REPO}#{NUM}; refusing terminal labels: {e}")
+        return 1
+
+    # Fail closed (#16471): labels are the terminal adjudication state. They are
+    # written only after the amount marker above is durable, so a partial success
+    # can always be retried rather than becoming permanently unpayable.
+    if not add_labels("bounty-eligible", "docstring-verified"):
+        gh(["issue", "comment", NUM, "-R", REPO, "--body",
+            f"⏸️ 🤖 **Docstring gate: amount recorded, but the payable labels could not be applied** "
+            f"(GitHub label API error), so this is **held**, not queued. PR {pr_repo}#{pr_num} is "
+            f"merged with **{doc_count}** docstrings → **{amount} RTC** once a human or the next "
+            f"sweep applies `bounty-eligible` + `docstring-verified`. The durable amount marker "
+            f"remains on this claim so settlement can resume safely."], None)
+        add_labels("needs-human")
+        print(f"::error::labels not applied on {REPO}#{NUM}; held, not queued")
+        return 1
+
+    # This user-facing confirmation is informational only. Settlement no longer
+    # depends on it: the amount marker and payable labels are already committed.
+    gh(["issue", "comment", NUM, "-R", REPO, "--body",
+        f"✅ 🤖 **Docstring gate: payable state committed.** Queued for payout of **{amount} RTC**. "
+        f"The balance moves after the standard confirmation window, not on this comment."], None)
     print(f"verified {doc_count} docstrings -> {amount} RTC on {REPO}#{NUM}")
     return 0
 
