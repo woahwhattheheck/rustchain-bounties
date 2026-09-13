@@ -45,6 +45,24 @@ class TransferAmountTests(unittest.TestCase):
             "admin_key": "test-key",
         })
 
+    def test_huge_positive_integer_reaches_wallet_post_unchanged(self):
+        client = server.RustChainClient("https://example.invalid")
+        amount = 10 ** 400
+        with patch.object(client, "_post", return_value={"ok": True}) as post, patch.object(server, "_client", client):
+            result = server.handle_tool("rustchain_transfer", {
+                "from_wallet": "source",
+                "to_wallet": "destination",
+                "amount": amount,
+                "admin_key": "test-key",
+            })
+        self.assertEqual({"ok": True}, result)
+        post.assert_called_once_with("/wallet/send", {
+            "from_wallet": "source",
+            "to_wallet": "destination",
+            "amount": amount,
+            "admin_key": "test-key",
+        })
+
 
 class QueryArgumentValidationTests(unittest.TestCase):
     def test_schema_declares_query_argument_constraints(self):
