@@ -16,11 +16,12 @@ and a rate, and the diff should be `+N/-0` where N is that count.
 
 WHAT IT VERIFIES (all of it, before paying anything)
   1. The cited PR is **MERGED**. An open PR is not delivered work.
-  2. The PR touches the claimed file.
-  3. The added lines are **actually docstrings** -- lines opening with a quote
+  2. The claim issue author is the same GitHub identity as the merged PR author.
+  3. The PR touches the claimed file.
+  4. The added lines are **actually docstrings** -- lines opening with a quote
      triple. This is the check that matters: without it "I added 40 docstrings"
      pays out for 40 lines of anything.
-  4. The claimed count matches what was really added.
+  5. The claimed count matches what was really added.
 
 PAYMENT IS COMPUTED FROM THE VERIFIED COUNT, NEVER THE CLAIMED ONE. A claim
 that overstates is paid the true amount rather than rejected outright -- the
@@ -303,6 +304,32 @@ def main():
             f"lands, and you do not need to re-file it."], None)
         add_labels("awaiting-merge")
         print(f"{pr_repo}#{pr_num} not merged ({pr.get('state')}); waiting")
+        return 0
+
+    claim_author = (iss.get("author") or {}).get("login")
+    pr_author = (pr.get("author") or {}).get("login")
+    if (
+        not isinstance(claim_author, str)
+        or not claim_author.strip()
+        or not isinstance(pr_author, str)
+        or not pr_author.strip()
+    ):
+        gh(["issue", "comment", NUM, "-R", REPO, "--body",
+            f"🤖 Docstring gate: {pr_repo}#{pr_num} is merged, but the gate could not establish "
+            f"both the claim author and merged PR author GitHub identities. Holding for human "
+            f"review rather than making the claim payable."], None)
+        add_labels("needs-human")
+        print(f"author identity unavailable for claim {REPO}#{NUM} / PR {pr_repo}#{pr_num}")
+        return 0
+
+    if claim_author.casefold() != pr_author.casefold():
+        gh(["issue", "comment", NUM, "-R", REPO, "--body",
+            f"🤖 Docstring gate: this claim was filed by **@{claim_author}**, but merged PR "
+            f"{pr_repo}#{pr_num} is authored by **@{pr_author}**. The payout runner resolves the "
+            f"recipient from the claim author, so the gate cannot safely make this claim payable. "
+            f"Holding for human review."], None)
+        add_labels("needs-human")
+        print(f"claim/PR author mismatch: @{claim_author} != @{pr_author}")
         return 0
 
     diff = gh_raw(["pr", "diff", pr_num, "-R", pr_repo])
