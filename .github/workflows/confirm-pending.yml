@@ -4,8 +4,9 @@ name: Confirm Pending RTC Transfers
 # window, then must be confirmed via POST /pending/confirm. The node bounds each
 # call to a batch (Rustchain#6900: default 100, max 500), so a single call no
 # longer drains the whole queue. This job therefore LOOPS, passing limit=500 and
-# repeating until stale_pending_count == 0 (or no further progress), so the full
-# past-void-window backlog is delivered every run regardless of size.
+# repeating until stale_pending_count == 0. Any inability to measure the queue,
+# request failure, zero-progress iteration, or safety-cap exhaustion with stale
+# work remaining is a failed delivery run rather than a successful drain.
 #
 # The 24h void window remains the safety review: void a suspect transfer within
 # 24h and this never confirms it.
@@ -35,10 +36,12 @@ jobs:
           RTC_VPS_HOST: ${{ secrets.RTC_VPS_HOST }}
           RTC_ADMIN_KEY: ${{ secrets.RTC_ADMIN_KEY }}
         run: |
+          set -euo pipefail
           if [ -z "$RTC_VPS_HOST" ] || [ -z "$RTC_ADMIN_KEY" ]; then
             echo "::error::RTC_VPS_HOST / RTC_ADMIN_KEY not configured"; exit 1
           fi
           total=0
+          last_stale=-1
           # Safety cap: 60 iterations * 500 = up to 30,000 transfers/run.
           for i in $(seq 1 60); do
             code=$(curl -sk -o resp.json -w '%{http_code}' --max-time 60 \
@@ -46,33 +49,45 @@ jobs:
               -H "X-Admin-Key: ${RTC_ADMIN_KEY}" \
               -H "Content-Type: application/json" -d '{"limit": 500}')
             if [ "$code" != "200" ]; then echo "::error::confirm HTTP $code"; cat resp.json; exit 1; fi
-            # `stale` is emitted as the literal string UNKNOWN when the node
-            # could not measure the queue (locked pending_ledger / schema drift).
-            # It used to come back as 0 in that case, which is this loop's stop
-            # condition — so a stuck queue printed "queue drained" and the job
-            # went green while RTC delivery was halted. Fail closed instead.
+            # Treat queue measurement and counters as part of the delivery
+            # contract. Missing/malformed values are not evidence of a drain.
             read confirmed stale < <(python3 - <<'PY'
           import json
+
           d = json.load(open('resp.json'))
           measured = d.get('overdue_stats_measured')
+          confirmed = d.get('confirmed_count')
           stale = d.get('stale_pending_count')
-          # measured is absent on older node builds; treat a present integer as
-          # measured so this workflow keeps working across the deploy window.
-          if measured is False or stale is None:
-              stale = 'UNKNOWN'
-          print(d.get('confirmed_count', 0), stale)
+
+          def nonnegative_int(value):
+              return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+          # `overdue_stats_measured` is absent on older node builds. A valid
+          # stale count remains acceptable during that deploy window, but an
+          # explicit false or malformed/missing counters fail closed.
+          if measured is False or not nonnegative_int(stale):
+              raise SystemExit('stale pending queue is not measurably known')
+          if not nonnegative_int(confirmed):
+              raise SystemExit('confirmed_count is missing or invalid')
+          print(confirmed, stale)
           PY
           )
+            last_stale=$stale
             total=$((total + confirmed))
             echo "iter $i: confirmed=$confirmed total=$total stale_remaining=$stale"
-            if [ "$stale" = "UNKNOWN" ]; then
-              echo "::error title=Pending queue not measurable::The node could not count overdue pending transfers, so the queue state is UNKNOWN. This is NOT a drained queue — RTC delivery may be halted."
+            if [ "$stale" -eq 0 ]; then
+              echo "queue drained"
+              break
+            fi
+            if [ "$confirmed" -eq 0 ]; then
+              echo "::error title=Pending confirmation made no progress::$stale stale pending transfer(s) remain, but this iteration confirmed zero. Refusing a false-green delivery run."
               cat resp.json
               exit 1
             fi
-            # Stop when the queue is drained, or a run makes no progress (e.g. all
-            # remaining rows error individually) to avoid spinning.
-            [ "${stale:-0}" -eq 0 ] && { echo "queue drained"; break; }
-            [ "${confirmed:-0}" -eq 0 ] && { echo "no progress this iter; stopping"; break; }
           done
-          echo "confirmed $total transfer(s) this run"
+          if [ "$last_stale" -ne 0 ]; then
+            echo "::error title=Pending confirmation safety cap exhausted::$last_stale stale pending transfer(s) remain after the maximum 60 confirmation iterations."
+            cat resp.json
+            exit 1
+          fi
+          echo "confirmed $total transfer(s) this run; stale backlog is zero"
