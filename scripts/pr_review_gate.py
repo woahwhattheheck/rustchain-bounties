@@ -11,6 +11,12 @@ core produced an authoritative verdict (bounty-eligible, needs-human, or
 closed).  A silent/no-op return exits nonzero instead.  ``gate-processed`` is
 only a provisional marker because the core writes it before the final verdict;
 a bare marker is replayed as retryable state rather than treated as terminal.
+
+The legacy core also performs one non-strict, one-page read of PR review
+comments.  That evidence participates in the paid first-substantive-reviewer
+decision, so this wrapper upgrades that exact read to strict exhaustive
+pagination.  Provider failure or incomplete pagination must never masquerade
+as "zero inline comments".
 """
 from __future__ import annotations
 
@@ -40,6 +46,8 @@ for _name in dir(_core):
 
 _RUNTIME_CONFIG = ("TOKEN", "REPO", "TARGET", "NUM", "CAP", "RATE", "API")
 _VERDICT_LABELS = frozenset({"bounty-eligible", "needs-human"})
+_INLINE_COMMENTS_SUFFIX = "/comments?per_page=100"
+_MAX_INLINE_COMMENT_PAGES = 100
 
 
 def _sync_runtime_config() -> None:
@@ -102,6 +110,66 @@ def _core_replay_issue(issue: dict[str, Any], labels: set[str]) -> dict[str, Any
     return replay
 
 
+def _is_inline_comment_read(path: str, method: str, data: Any) -> bool:
+    """Return True only for the legacy paid-decision review-comment list read."""
+    return (
+        method == "GET"
+        and data is None
+        and path.startswith("/repos/")
+        and "/pulls/" in path
+        and path.endswith(_INLINE_COMMENTS_SUFFIX)
+    )
+
+
+def _read_inline_comments_strict(
+    provider: Callable[..., Any], first_page_path: str
+) -> list[dict[str, Any]]:
+    """Read every review-comment page or fail closed.
+
+    The legacy core asks only for ``per_page=100`` and treats a failed GET as
+    ``[]``.  Both behaviours are unsafe because inline-comment presence helps
+    decide who is the first substantive reviewer and whether a claim is
+    payable.  Keep the first-page URL byte-compatible with existing callers,
+    force strict transport semantics, then continue until a short page proves
+    exhaustion.  A pathological source that never exhausts is not evidence of
+    completeness and therefore fails closed.
+    """
+    comments: list[dict[str, Any]] = []
+    for page in range(1, _MAX_INLINE_COMMENT_PAGES + 1):
+        page_path = (
+            first_page_path
+            if page == 1
+            else f"{first_page_path}&page={page}"
+        )
+        try:
+            rows = provider(page_path, strict=True)
+        except Exception as exc:
+            if isinstance(exc, ApiError):
+                raise
+            raise ApiError(
+                "authoritative inline review-comment read failed on "
+                f"page {page}: {exc.__class__.__name__}: {exc}"
+            ) from exc
+
+        if not isinstance(rows, list):
+            raise ApiError(
+                f"inline review-comment page {page} returned a non-list payload"
+            )
+        if any(not isinstance(row, dict) for row in rows):
+            raise ApiError(
+                f"inline review-comment page {page} contains malformed rows"
+            )
+
+        comments.extend(rows)
+        if len(rows) < 100:
+            return comments
+
+    raise ApiError(
+        "inline review-comment pagination exceeded "
+        f"{_MAX_INLINE_COMMENT_PAGES} full pages without proving exhaustion"
+    )
+
+
 def main() -> int:
     _sync_runtime_config()
     provider = globals()["api"]
@@ -145,6 +213,13 @@ def main() -> int:
         ):
             replayed_claim = True
             return replay_issue
+
+        # Inline review comments are payout evidence.  The preserved core asks
+        # for a single non-strict page; convert that one legacy call into a
+        # strict complete read so provider failure or page truncation cannot
+        # become an authoritative zero.
+        if _is_inline_comment_read(path, method, data):
+            return _read_inline_comments_strict(provider, path)
 
         result = provider(path, method=method, data=data, strict=strict)
 
