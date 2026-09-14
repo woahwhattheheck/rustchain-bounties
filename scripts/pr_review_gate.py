@@ -17,6 +17,10 @@ comments.  That evidence participates in the paid first-substantive-reviewer
 decision, so this wrapper upgrades that exact read to strict exhaustive
 pagination.  Provider failure or incomplete pagination must never masquerade
 as "zero inline comments".
+
+When a bare-marker replay retries a rejection close, an exact strict census of
+existing issue comments prevents the preserved core from notifying the claimant
+twice if the first comment succeeded but the close PATCH failed.
 """
 from __future__ import annotations
 
@@ -48,6 +52,7 @@ _RUNTIME_CONFIG = ("TOKEN", "REPO", "TARGET", "NUM", "CAP", "RATE", "API")
 _VERDICT_LABELS = frozenset({"bounty-eligible", "needs-human"})
 _INLINE_COMMENTS_SUFFIX = "/comments?per_page=100"
 _MAX_INLINE_COMMENT_PAGES = 100
+_MAX_ISSUE_COMMENT_PAGES = 100
 
 
 def _sync_runtime_config() -> None:
@@ -170,6 +175,41 @@ def _read_inline_comments_strict(
     )
 
 
+def _existing_comment_bodies(
+    provider: Callable[..., Any], claim_path: str
+) -> set[str]:
+    """Return a strict complete census of claimant-facing issue comments."""
+    bodies: set[str] = set()
+    for page in range(1, _MAX_ISSUE_COMMENT_PAGES + 1):
+        try:
+            rows = provider(
+                f"{claim_path}/comments?per_page=100&page={page}", strict=True
+            )
+        except Exception as exc:
+            if isinstance(exc, ApiError):
+                raise
+            raise ApiError(
+                "authoritative issue-comment read failed on "
+                f"page {page}: {exc.__class__.__name__}: {exc}"
+            ) from exc
+        if not isinstance(rows, list):
+            raise ApiError(
+                f"issue-comment page {page} returned a non-list payload"
+            )
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("body"), str):
+                raise ApiError(
+                    f"issue-comment page {page} contains malformed rows"
+                )
+            bodies.add(row["body"])
+        if len(rows) < 100:
+            return bodies
+    raise ApiError(
+        "issue-comment pagination exceeded "
+        f"{_MAX_ISSUE_COMMENT_PAGES} full pages without proving exhaustion"
+    )
+
+
 def main() -> int:
     _sync_runtime_config()
     provider = globals()["api"]
@@ -192,13 +232,18 @@ def main() -> int:
     if "needs-human" in initial_labels and not retry_needs_human:
         return 0
 
+    provisional_replay = (
+        "gate-processed" in initial_labels
+        and not _VERDICT_LABELS.intersection(initial_labels)
+    )
     replay_issue = _core_replay_issue(issue, initial_labels)
     replayed_claim = False
     verdict_seen = False
+    replay_comment_bodies: set[str] | None = None
     original_core_api = _core.api
 
     def tracked_api(path, method="GET", data=None, strict=False):
-        nonlocal replayed_claim, verdict_seen
+        nonlocal replayed_claim, verdict_seen, replay_comment_bodies
 
         # The strict preflight is the authoritative first claim read.  Replay
         # it exactly once so the preserved core cannot perform the old
@@ -221,7 +266,27 @@ def main() -> int:
         if _is_inline_comment_read(path, method, data):
             return _read_inline_comments_strict(provider, path)
 
+        # On a bare-marker replay, the preserved rejection helper may retry a
+        # claimant-facing comment which succeeded immediately before a close
+        # PATCH failed.  Suppress only an exact body already present in a
+        # strict exhaustive issue-comment census.
+        rejection_comment = (
+            provisional_replay
+            and method == "POST"
+            and path == f"{claim_path}/comments"
+            and isinstance(data, dict)
+            and isinstance(data.get("body"), str)
+        )
+        if rejection_comment:
+            if replay_comment_bodies is None:
+                replay_comment_bodies = _existing_comment_bodies(provider, claim_path)
+            if data["body"] in replay_comment_bodies:
+                return {"deduplicated": True}
+
         result = provider(path, method=method, data=data, strict=strict)
+
+        if rejection_comment and replay_comment_bodies is not None:
+            replay_comment_bodies.add(data["body"])
 
         # Count a verdict only after the mutation call has returned
         # successfully.  `gate-processed` alone is intentionally insufficient:
