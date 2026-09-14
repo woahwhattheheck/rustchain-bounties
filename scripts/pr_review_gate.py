@@ -4,12 +4,13 @@
 
 The historical implementation remains byte-for-byte in
 ``pr_review_gate_core.py``.  This entrypoint preserves its import surface while
-closing one money-path ambiguity: failure to read the claim itself must never
-look like a successful adjudication to ``pr_review_gate_backfill.py``.
+closing money-path ambiguities that the legacy gate cannot distinguish itself.
 
 For an open review claim that was not already terminal, exit 0 now means the
 core produced an authoritative verdict (bounty-eligible, needs-human, or
-closed).  A silent/no-op return exits nonzero instead.
+closed).  A silent/no-op return exits nonzero instead.  ``gate-processed`` is
+only a provisional marker because the core writes it before the final verdict;
+a bare marker is replayed as retryable state rather than treated as terminal.
 """
 from __future__ import annotations
 
@@ -81,6 +82,26 @@ def _read_claim_strict(provider: Callable[..., Any]) -> tuple[dict[str, Any], st
     return issue, claim_path
 
 
+def _core_replay_issue(issue: dict[str, Any], labels: set[str]) -> dict[str, Any]:
+    """Hide only a bare provisional marker from the preserved core.
+
+    The legacy core treats ``gate-processed`` as terminal on entry even though
+    it writes that label before its final payout disposition.  If that marker
+    exists without ``bounty-eligible`` or ``needs-human`` on an open claim, a
+    previous invocation may have died between the provisional write and the
+    verdict mutation.  Replay the same authoritative claim with only that
+    provisional label removed so the preserved core re-adjudicates it.  All
+    other claim fields and labels remain untouched.
+    """
+    if "gate-processed" not in labels or _VERDICT_LABELS.intersection(labels):
+        return issue
+    replay = dict(issue)
+    replay["labels"] = [
+        item for item in issue["labels"] if item.get("name") != "gate-processed"
+    ]
+    return replay
+
+
 def main() -> int:
     _sync_runtime_config()
     provider = globals()["api"]
@@ -98,11 +119,12 @@ def main() -> int:
 
     initial_labels = _label_names(issue)
     retry_needs_human = os.environ.get("RETRY_NEEDS_HUMAN", "") == "1"
-    if "bounty-eligible" in initial_labels or "gate-processed" in initial_labels:
+    if "bounty-eligible" in initial_labels:
         return 0
     if "needs-human" in initial_labels and not retry_needs_human:
         return 0
 
+    replay_issue = _core_replay_issue(issue, initial_labels)
     replayed_claim = False
     verdict_seen = False
     original_core_api = _core.api
@@ -112,7 +134,9 @@ def main() -> int:
 
         # The strict preflight is the authoritative first claim read.  Replay
         # it exactly once so the preserved core cannot perform the old
-        # non-strict GET that collapsed 403/429 into None.
+        # non-strict GET that collapsed 403/429 into None.  A bare provisional
+        # gate-processed marker is removed only from this in-process replay so
+        # the preserved core cannot mistake a half-commit for a terminal state.
         if (
             not replayed_claim
             and method == "GET"
@@ -120,7 +144,7 @@ def main() -> int:
             and path == claim_path
         ):
             replayed_claim = True
-            return issue
+            return replay_issue
 
         result = provider(path, method=method, data=data, strict=strict)
 
