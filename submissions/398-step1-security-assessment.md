@@ -1,0 +1,64 @@
+# RustChain Security Quest #398 — Step 1 Architecture Assessment
+
+**Claimed step:** Step 1 only — “Read the Architecture” (10 RTC)  
+**Assessment date:** 2026-09-14  
+**Source reviewed:** `Scottcjn/Rustchain` `main` at commit `aa584b344a766f6c0f8613ba7198d1cc7ffbae35`  
+**Primary file:** `node/rustchain_v2_integrated_v2.2.1_rip200.py` (blob `cfab59e1a321b79bac28de71df4385c26868d5ce`)
+
+This assessment is intentionally pinned to a specific source revision because RustChain’s attestation and reward code is changing quickly. The discussion below describes the code at that commit, not an older audit or a generic Proof-of-Antiquity design.
+
+## 1. How `/attest/submit` works
+
+The attestation flow starts one step before `/attest/submit`, in `get_challenge()` around lines 5817–5885. The node rate-limits challenge creation by source IP, creates a 32-byte random nonce with `secrets.token_hex(32)`, and gives it a five-minute expiry. If the client supplies `miner` or `miner_id`, the challenge is stored with a `bound_miner`; malformed non-object request bodies are rejected instead of being allowed to fill the nonce table. That matters because the nonce is not merely a freshness token: when it is identity-bound, a different miner cannot consume it later.
+
+The current `_submit_attestation_impl()` begins around line 6102. It first requires a JSON object and normalizes the miner, report, nonce, and device fields. It then handles Ed25519 identity protection. The preferred scheme signs canonical JSON for the full attestation payload after excluding the signature metadata, which covers the device, fingerprint, and signals. A narrower legacy four-field signature remains for backward compatibility, but an explicitly canonical/Ed25519 request is not allowed to fall back to that weaker form. The implementation also reads the stored signing-key state and blocks unauthorized key rotation in enforcing phases. Self-certifying RTC addresses must have a public key that derives to the claimed address; new symbolic identities can be pinned on first use, while grandfathered symbolic identities are deliberately held for an administrative enrollment path.
+
+After identity checks, `/attest/submit` applies IP rate limiting, requires a nonce, and calls `attest_validate_and_store_nonce()`. The response distinguishes an expired/missing challenge, replay, and identity mismatch. The submit path then normalizes signals and fingerprint data, applies wallet-review policy, checks one-machine/one-wallet hardware binding, and runs the VM-OUI gate. There is a second replay-defense layer over the fingerprint itself: fingerprint-hash replay, entropy-profile collision, and per-hardware/per-wallet rate checks can block the request before reward eligibility is considered.
+
+Crucially, an accepted HTTP attestation is not synonymous with a reward-bearing attestation. `validate_fingerprint_data()` determines `fingerprint_passed`; `check_vm_signatures_server_side()` can force that result back to false. The node still records a failed fingerprint so liveness/history can be tracked, but a failed fingerprint gets zero reward weight. The successful-path record includes the observed source IP, normalized device information, the signing key, entropy information, and fingerprint history. A first-attestation welcome bonus is only paid when the fingerprint passed. Finally, the submit path auto-enrolls the miner in the current epoch using server-derived hardware identity and the current fingerprint evidence rather than trusting the requested reward tier directly.
+
+## 2. How fingerprinting raises the cost of VM farms
+
+The anti-VM design is layered rather than relying on one user-controlled boolean. `validate_fingerprint_data()` starts around line 4780. For normal capable hardware, a missing or empty fingerprint fails. The required checks include anti-emulation and clock-drift evidence, and dictionary-form checks must carry raw measurement data. A bare boolean `true` is explicitly treated as unmeasured for normal hardware rather than as proof. The anti-emulation validator reads the evidence itself: VM/emulator indicators and `is_likely_vm` can cause failure even if the client’s own `passed` field says otherwise.
+
+The code has capability-aware exceptions for hardware that genuinely cannot produce the same measurements. Old 386/486-class machines, PowerPC-era machines, stand-alone micros, and Pico-bridged consoles are not forced through a modern x86 measurement template. Those relaxations are constrained by corroborating device shape and contradiction checks. For example, a console relaxation requires the expected Pico bridge shape, and a limited-hardware claim can be vetoed when the payload contains modern contradictory evidence. That distinction is important: “cannot measure” is different from “client omitted a check.” The current regression test `tests/test_rip309b_capability_unmeasured.py` explicitly verifies that missing checks on modern hardware count as failures while genuinely capability-limited devices can have an `unmeasured` state only after earning that classification.
+
+Reward-tier classification is separately hardened. `derive_verified_device()` and `_derive_enroll_weight_device()` re-derive what the node is willing to reward. High-paying ARM, console, PowerPC, and vintage-x86 claims require corroborating evidence; an unvouched above-neutral claim is capped toward a modern/default class rather than receiving the requested antiquity multiplier. Vintage x86 reward tiers additionally require a complete age-oracle observation, a server-recognized CPU brand/family match, valid measurement evidence, complete SIMD observation, and no modern SIMD contradiction.
+
+RustChain also tries to make “many identities on one machine” expensive. The binding path associates a hardware identity with a miner under a write lock, and the modern binding path removes the client-supplied serial from the hardened identity key so simply changing a serial string does not mint a fresh machine. Source IP, MAC observations, stable hardware identity, replay/collision detection, and rate limits provide additional correlation signals. Temporal history is another layer: `validate_temporal_consistency()` looks for frozen profiles, implausibly noisy profiles, and drift outside expected bands. `apply_temporal_consistency_to_weight()` gates the antiquity bonus rather than simply logging the result. Finally, RIP-309 rotates which fingerprint checks affect an epoch; capable hardware cannot obtain full rotating-check credit by omitting measurements.
+
+None of these controls makes software emulation mathematically impossible. The security goal is economic: a farm must maintain a coherent hardware story across identity binding, raw measurement checks, changing epoch-selected checks, and historical consistency instead of submitting a single static “I am vintage hardware” label.
+
+## 3. How epoch rewards are calculated and distributed
+
+The `/attest/submit` auto-enrollment section around lines 6650–6800 is where evidence becomes reward weight. The node first derives a verified reward device, obtains its hardware weight from `HARDWARE_WEIGHTS`, and applies temporal-consistency gating. It then calls `evaluate_rotating_fingerprint_checks()` for the current epoch. If the fingerprint failed, the stored epoch weight is the failed-fingerprint value (effectively no reward eligibility). Otherwise, the weight is the hardware weight multiplied by the rotating-check `active_ratio`, converted into fixed-point epoch weight units. `INSERT OR IGNORE` makes the first enrollment for that miner/epoch authoritative, preventing a later request from overwriting a legitimate weight with a lower or attacker-chosen one.
+
+`finalize_epoch()` around lines 5450–5740 performs settlement. It loads the enrolled miners and normalized weights, rejects an empty or zero-weight set, computes the epoch pot using `Decimal`, and clamps issuance to remaining supply-cap headroom. Zero-weight miners are filtered out. The RIP-309 finalization pass can additionally zero miners that have failed active checks, and per-miner weight is capped by `MAX_EPOCH_WEIGHT_UNITS`.
+
+The settlement itself is explicitly atomic. The node starts an `IMMEDIATE` transaction, inserts an `epoch_state` row if necessary, and atomically flips `settled=0` to `settled=1`. If another finalizer already won that claim, the transaction rolls back before any credit occurs. For each valid miner, the reward is proportional to `weight / total_weight`; integer account units are derived from the `Decimal` amount with overflow checks. Existing balance rows are credited, audit-ledger rows are attempted inside per-row savepoints, and optional UTXO dual-write batches create mining-reward outputs. The epoch-settled claim and the balance credits commit together, so a failure in the core settlement path rolls the transaction back instead of partially paying an epoch twice.
+
+This means RustChain’s reward security is not only “did the fingerprint pass?” It is a chain of decisions: attestation evidence → server-derived device class → temporal adjustment → rotating-check ratio → fixed-point epoch weight → proportional settlement under an atomic replay guard.
+
+## 4. Potential attack vector: fresh envelope, stale measurement content
+
+The most interesting current residual surface I found is measurement freshness. The challenge/nonce path proves that the **attestation envelope** is fresh, but it does not yet require the expensive hardware measurements inside that envelope to have been produced for that challenge.
+
+The source acknowledges this directly. `derive_measurement_workload()` and `verify_measurement_binding()` implement a challenge-dependent measurement workload: the expected iteration count is derived from the nonce, and a submitted binding can also be checked for a plausible per-iteration rate. However, the auto-enrollment path at roughly lines 6726–6742 labels RIP-309c as **“phase 0: observe only”** and explicitly says the binding is **not enforced yet**. A missing binding therefore reports state `absent` but does not by itself reduce weight or reject the attestation.
+
+That leaves a potential economic shortcut for a sophisticated farm: obtain a fresh server nonce and sign a fresh outer payload, but reuse measurement content collected earlier instead of performing nonce-dependent measurement work for every challenge. The full canonical signature prevents third-party tampering, nonce replay controls prevent simply resubmitting the same envelope, fingerprint replay/collision checks raise the cost of exact reuse, and temporal-consistency logic punishes frozen or wildly noisy histories. Those are meaningful mitigations. They are not the same property as cryptographically or deterministically binding the measurement work itself to the current challenge, however. The current comments even note that the reference client has historically cached measurements for the process lifetime, which shows why envelope freshness and measurement freshness are separate concepts.
+
+I would harden this in stages rather than suddenly rejecting old vintage clients. For capable modern clients, first make an absent or invalid `measurement_binding` reduce only the **antiquity bonus**, preserving base participation. Keep explicit capability exceptions for hardware that cannot produce the binding. After fleet adoption is measurable, require a valid nonce-derived binding for above-neutral reward tiers and persist the binding verdict with the attestation so settlement can audit the exact evidence that justified the premium. That would align the cost of each high-value attestation with the fresh challenge while keeping RustChain’s current compatibility philosophy.
+
+I am treating this as the Step 1-required **potential attack vector**, not claiming a new Step 3 vulnerability or a confirmed exploit. A Step 3 report would need an end-to-end reproduction and impact demonstration against the current implementation.
+
+## Source map
+
+- `node/rustchain_v2_integrated_v2.2.1_rip200.py` @ `aa584b344a766f6c0f8613ba7198d1cc7ffbae35`
+  - `get_challenge()` — around lines 5817–5885
+  - `_submit_attestation_impl()` — starts around line 6102
+  - `validate_fingerprint_data()` — starts around line 4780
+  - `derive_verified_device()` / `_derive_enroll_weight_device()` — device-class and reward-tier derivation
+  - `verify_measurement_binding()` — challenge-dependent measurement freshness helper
+  - auto-enrollment / RIP-309c observe-only binding — around lines 6650–6800, binding block around 6726–6742
+  - `finalize_epoch()` — reward filtering, atomic settlement, proportional credit, and optional UTXO dual-write around lines 5450–5740
+- `tests/test_rip309b_capability_unmeasured.py` @ the same source commit — regression coverage for modern missing-check failure vs capability-limited `unmeasured` handling.
