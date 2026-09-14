@@ -11,6 +11,9 @@ core produced an authoritative verdict (bounty-eligible, needs-human, or
 closed).  A silent/no-op return exits nonzero instead.  ``gate-processed`` is
 only a provisional marker because the core writes it before the final verdict;
 a bare marker is replayed as retryable state rather than treated as terminal.
+When such a replay retries a rejection close, an exact existing-comment census
+prevents the preserved core from notifying the claimant twice if the first
+comment succeeded but the close PATCH failed.
 """
 from __future__ import annotations
 
@@ -40,6 +43,7 @@ for _name in dir(_core):
 
 _RUNTIME_CONFIG = ("TOKEN", "REPO", "TARGET", "NUM", "CAP", "RATE", "API")
 _VERDICT_LABELS = frozenset({"bounty-eligible", "needs-human"})
+_MAX_COMMENT_CENSUS_PAGES = 100
 
 
 def _sync_runtime_config() -> None:
@@ -102,6 +106,34 @@ def _core_replay_issue(issue: dict[str, Any], labels: set[str]) -> dict[str, Any
     return replay
 
 
+def _existing_comment_bodies(
+    provider: Callable[..., Any], claim_path: str
+) -> set[str]:
+    """Return a complete strict census of existing claimant-comment bodies.
+
+    A bare ``gate-processed`` marker can mean a previous rejection comment was
+    published immediately before the close PATCH failed.  Replaying that close
+    must not post the same notice again.  Read every issue-comment page and
+    fail closed on transport/shape trouble instead of assuming absence.
+    """
+    bodies: set[str] = set()
+    for page in range(1, _MAX_COMMENT_CENSUS_PAGES + 1):
+        rows = provider(
+            f"{claim_path}/comments?per_page=100&page={page}", strict=True
+        )
+        if not isinstance(rows, list):
+            raise ApiError("claim comment census returned a non-list page")
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("body"), str):
+                raise ApiError("claim comment census contained malformed comment metadata")
+            bodies.add(row["body"])
+        if len(rows) < 100:
+            return bodies
+    raise ApiError(
+        f"claim comment census exceeded {_MAX_COMMENT_CENSUS_PAGES} full pages"
+    )
+
+
 def main() -> int:
     _sync_runtime_config()
     provider = globals()["api"]
@@ -124,13 +156,18 @@ def main() -> int:
     if "needs-human" in initial_labels and not retry_needs_human:
         return 0
 
+    provisional_replay = (
+        "gate-processed" in initial_labels
+        and not _VERDICT_LABELS.intersection(initial_labels)
+    )
     replay_issue = _core_replay_issue(issue, initial_labels)
     replayed_claim = False
     verdict_seen = False
+    replay_comment_bodies: set[str] | None = None
     original_core_api = _core.api
 
     def tracked_api(path, method="GET", data=None, strict=False):
-        nonlocal replayed_claim, verdict_seen
+        nonlocal replayed_claim, verdict_seen, replay_comment_bodies
 
         # The strict preflight is the authoritative first claim read.  Replay
         # it exactly once so the preserved core cannot perform the old
@@ -146,7 +183,34 @@ def main() -> int:
             replayed_claim = True
             return replay_issue
 
+        # The preserved rejection helper publishes the claimant-facing comment
+        # before PATCHing the issue closed.  If that PATCH failed on a previous
+        # run, the bare provisional marker deliberately re-enters the core.  In
+        # that one replay mode, suppress only an exact already-published body;
+        # otherwise a transient close failure creates duplicate notifications.
+        if (
+            provisional_replay
+            and method == "POST"
+            and path == f"{claim_path}/comments"
+            and isinstance(data, dict)
+            and isinstance(data.get("body"), str)
+        ):
+            if replay_comment_bodies is None:
+                replay_comment_bodies = _existing_comment_bodies(provider, claim_path)
+            if data["body"] in replay_comment_bodies:
+                return {"deduplicated": True}
+
         result = provider(path, method=method, data=data, strict=strict)
+
+        if (
+            provisional_replay
+            and method == "POST"
+            and path == f"{claim_path}/comments"
+            and isinstance(data, dict)
+            and isinstance(data.get("body"), str)
+            and replay_comment_bodies is not None
+        ):
+            replay_comment_bodies.add(data["body"])
 
         # Count a verdict only after the mutation call has returned
         # successfully.  `gate-processed` alone is intentionally insufficient:
