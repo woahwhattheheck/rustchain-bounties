@@ -43,17 +43,22 @@ def main() -> None:
 
         conn = sqlite3.connect(db_path)
         try:
+            # Match the provenance schema created by the real genesis migration.
             conn.execute(
                 """
                 CREATE TABLE account_mirror_boxes (
                     box_id TEXT PRIMARY KEY,
-                    account_wallet TEXT NOT NULL
+                    account_wallet TEXT NOT NULL,
+                    value_nrtc INTEGER NOT NULL,
+                    created_epoch INTEGER NOT NULL
                 )
                 """
             )
             conn.execute(
-                "INSERT INTO account_mirror_boxes (box_id, account_wallet) VALUES (?, ?)",
-                (box_id, address),
+                """INSERT INTO account_mirror_boxes
+                   (box_id, account_wallet, value_nrtc, created_epoch)
+                   VALUES (?, ?, ?, ?)""",
+                (box_id, address, value_nrtc, 0),
             )
             conn.commit()
         finally:
