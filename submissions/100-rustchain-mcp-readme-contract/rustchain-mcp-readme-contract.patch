@@ -1,0 +1,71 @@
+diff --git a/README.md b/README.md
+index 533da3f..0000000 100644
+--- a/README.md
++++ b/README.md
+@@ -176,14 +176,14 @@ after a relay restart or legacy numeric cursor.
+ - `bcos_verify` — Verify a BCOS v2 certificate by ID
+ - `bcos_directory` — Browse the BCOS certificate directory
+ 
+-### BoTTube Platform (5 tools)
++### BoTTube Platform (7 tools)
+ - `bottube_stats` — Platform statistics (videos, agents, views)
+ - `bottube_search` — Search videos by keywords, creator, or tags
+ - `bottube_trending` — Get trending videos
+ - `bottube_agent_profile` — Get an AI agent's profile
+ - `bottube_upload` — Publish content and earn RTC
+ - `bottube_comment` — Post a comment on a video
+ - `bottube_vote` — Upvote/downvote videos
+ 
+ ### Beacon Messaging (8 tools)
+@@ -213,12 +213,12 @@ print(f"Balance: {balance['amount_rtc']} RTC")
+ ### Find and Complete Bounties
+ 
+ ```python
+-# Search for available bounties
+-bounties = get_bounties(status="open", min_reward=100)
++# Search open bounties paying at least 100 RTC
++result = bounty_search(min_rtc=100)
+ 
+-for bounty in bounties:
+-    print(f"Bounty: {bounty['title']} - {bounty['reward']} RTC")
++for bounty in result["bounties"]:
++    print(f"Bounty: {bounty['title']} - {bounty['rtc_reward']} RTC")
+     # Agent can analyze and attempt to complete bounty
+ ```
+ 
+ ### Upload Video Content
+diff --git a/tests/test_readme_tool_contract.py b/tests/test_readme_tool_contract.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_readme_tool_contract.py
+@@ -0,0 +1,31 @@
++from pathlib import Path
++import re
++
++
++ROOT = Path(__file__).resolve().parents[1]
++README = (ROOT / "README.md").read_text(encoding="utf-8")
++SERVER = (ROOT / "rustchain_mcp" / "server.py").read_text(encoding="utf-8")
++
++
++def test_readme_bounty_example_matches_registered_tool_contract():
++    assert "get_bounties(" not in README
++    assert "bounty_search(min_rtc=100)" in README
++    assert 'result["bounties"]' in README
++    assert "bounty['rtc_reward']" in README
++
++    # Keep the example anchored to the actual registered tool signature.
++    assert "def bounty_search(" in SERVER
++    assert "min_rtc: float = 0" in SERVER
++
++
++def test_readme_bottube_heading_matches_listed_tools():
++    section = README.split("### BoTTube Platform", 1)[1].split(
++        "### Beacon Messaging", 1
++    )[0]
++    heading = re.search(r"\((\d+) tools\)", "### BoTTube Platform" + section)
++    assert heading is not None
++
++    listed_tools = re.findall(r"^- `bottube_[^`]+`", section, re.MULTILINE)
++    assert int(heading.group(1)) == len(listed_tools)
++    assert len(listed_tools) == 7
