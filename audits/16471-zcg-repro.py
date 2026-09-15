@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """Offline reproducer for ZCG-M7Q5 payout-audit findings under #16471.
 
 No network calls, wallet access, secrets, or production mutations. This models
