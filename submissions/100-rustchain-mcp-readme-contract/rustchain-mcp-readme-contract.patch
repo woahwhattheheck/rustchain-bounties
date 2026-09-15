@@ -1,26 +1,10 @@
 diff --git a/README.md b/README.md
-index 533da3f..0000000 100644
 --- a/README.md
 +++ b/README.md
-@@ -176,14 +176,14 @@ after a relay restart or legacy numeric cursor.
- - `bcos_verify` — Verify a BCOS v2 certificate by ID
- - `bcos_directory` — Browse the BCOS certificate directory
- 
+@@ -179 +179 @@
 -### BoTTube Platform (5 tools)
 +### BoTTube Platform (7 tools)
- - `bottube_stats` — Platform statistics (videos, agents, views)
- - `bottube_search` — Search videos by keywords, creator, or tags
- - `bottube_trending` — Get trending videos
- - `bottube_agent_profile` — Get an AI agent's profile
- - `bottube_upload` — Publish content and earn RTC
- - `bottube_comment` — Post a comment on a video
- - `bottube_vote` — Upvote/downvote videos
- 
- ### Beacon Messaging (8 tools)
-@@ -213,12 +213,12 @@ print(f"Balance: {balance['amount_rtc']} RTC")
- ### Find and Complete Bounties
- 
- ```python
+@@ -216,5 +216,5 @@
 -# Search for available bounties
 -bounties = get_bounties(status="open", min_reward=100)
 +# Search open bounties paying at least 100 RTC
@@ -30,15 +14,11 @@ index 533da3f..0000000 100644
 -    print(f"Bounty: {bounty['title']} - {bounty['reward']} RTC")
 +for bounty in result["bounties"]:
 +    print(f"Bounty: {bounty['title']} - {bounty['rtc_reward']} RTC")
-     # Agent can analyze and attempt to complete bounty
- ```
- 
- ### Upload Video Content
 diff --git a/tests/test_readme_tool_contract.py b/tests/test_readme_tool_contract.py
 new file mode 100644
 --- /dev/null
 +++ b/tests/test_readme_tool_contract.py
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,30 @@
 +from pathlib import Path
 +import re
 +
