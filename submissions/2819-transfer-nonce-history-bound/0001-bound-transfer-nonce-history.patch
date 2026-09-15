@@ -1,0 +1,108 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] Bound UTXO transfer nonce history per wallet
+
+The signed UTXO transfer endpoint already requires every accepted nonce to be
+strictly greater than the wallet's prior maximum. Retaining every superseded
+nonce is therefore unnecessary for replay protection and lets a funded wallet
+grow transfer_nonces without bound.
+
+After all transfer/shadow writes succeed, compact that wallet's history to the
+just-accepted nonce inside the same transaction. Exact replay of the latest
+nonce is still rejected by INSERT OR IGNORE; older nonces remain rejected by
+the monotonicity check.
+
+Add an endpoint regression proving three increasing-nonce transfers leave one
+row and that an old nonce is still rejected without changing balances.
+---
+ node/test_utxo_endpoints.py | 48 ++++++++++++++++++++++++++++++++++++++++
+ node/utxo_endpoints.py      |  9 ++++++++
+ 2 files changed, 57 insertions(+)
+
+diff --git a/node/utxo_endpoints.py b/node/utxo_endpoints.py
+index f277fea..0000000 100644
+--- a/node/utxo_endpoints.py
++++ b/node/utxo_endpoints.py
+@@ -894,6 +894,15 @@ def utxo_transfer():
+                  f"utxo_transfer_in:{from_address[:20]}:{memo[:30]}")
+             )
+ 
++        # SECURITY(#2819): accepted nonces are strictly increasing, so every
++        # nonce older than the just-accepted value is already rejected by the
++        # monotonicity check above. Keeping the full successful history grows
++        # this table and its PK index without bound. Compact only after all
++        # transfer/shadow writes have succeeded; because this is in the same
++        # transaction, any later rollback restores the prior nonce state too.
++        conn.execute(
++            "DELETE FROM transfer_nonces WHERE from_address = ? AND nonce != ?",
++            (from_address, nonce),
++        )
+         conn.commit()
+     except Exception:
+         try:
+diff --git a/node/test_utxo_endpoints.py b/node/test_utxo_endpoints.py
+index 610bd77..0000000 100644
+--- a/node/test_utxo_endpoints.py
++++ b/node/test_utxo_endpoints.py
+@@ -438,6 +438,54 @@ class TestUtxoEndpoints(unittest.TestCase):
+         self.assertEqual(self.utxo_db.get_balance(sender), 90 * UNIT)
+         self.assertEqual(self.utxo_db.get_balance(recipient), 10 * UNIT)
+ 
++    def test_transfer_compacts_superseded_nonce_history(self):
++        """Successful transfers retain only the latest nonce per wallet."""
++        sender = 'RTC_test_aabbccdd'
++        recipient = ('RTC' + 'b' * 40)
++        self._seed_coinbase(sender, 100 * UNIT)
++
++        for nonce in (100, 200, 300):
++            response = self.client.post('/utxo/transfer', json={
++                'from_address': sender,
++                'to_address': recipient,
++                'amount_rtc': 1.0,
++                'public_key': 'aabbccdd' * 8,
++                'signature': 'sig' * 22,
++                'nonce': nonce,
++            })
++            self.assertEqual(response.status_code, 200, response.get_json())
++
++        conn = sqlite3.connect(self.db_path)
++        try:
++            rows = conn.execute(
++                "SELECT nonce FROM transfer_nonces "
++                "WHERE from_address = ? ORDER BY CAST(nonce AS INTEGER)",
++                (sender,),
++            ).fetchall()
++        finally:
++            conn.close()
++        self.assertEqual(rows, [('300',)])
++
++        sender_before = self.utxo_db.get_balance(sender)
++        recipient_before = self.utxo_db.get_balance(recipient)
++        stale = self.client.post('/utxo/transfer', json={
++            'from_address': sender,
++            'to_address': recipient,
++            'amount_rtc': 1.0,
++            'public_key': 'aabbccdd' * 8,
++            'signature': 'sig' * 22,
++            'nonce': 100,
++        })
++        self.assertEqual(stale.status_code, 400, stale.get_json())
++        self.assertEqual(stale.get_json()['code'], 'OUT_OF_ORDER_NONCE')
++        self.assertEqual(stale.get_json()['latest_nonce'], 300)
++        self.assertEqual(self.utxo_db.get_balance(sender), sender_before)
++        self.assertEqual(self.utxo_db.get_balance(recipient), recipient_before)
++
++        conn = sqlite3.connect(self.db_path)
++        try:
++            rows = conn.execute(
++                "SELECT nonce FROM transfer_nonces WHERE from_address = ?",
++                (sender,),
++            ).fetchall()
++        finally:
++            conn.close()
++        self.assertEqual(rows, [('300',)])
++
+     def test_transfer_accepts_legacy_string_nonce_signature_form(self):
+         sender = 'RTC_test_aabbccdd'
+         self._seed_coinbase(sender, 100 * UNIT)
+-- 
+2.46.0
