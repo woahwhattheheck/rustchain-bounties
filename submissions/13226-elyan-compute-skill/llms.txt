@@ -1,0 +1,47 @@
+# Elyan Labs Compute Skill
+
+> Elyan Labs Compute Skill is a Beacon Protocol skill for pay-per-request LLM inference, vision understanding, text-to-speech, and video generation using x402 USDC on Base or RustChain RTC.
+
+Elyan Labs Compute Skill packages remote compute endpoints for agent clients, including Conway Automaton. The canonical skill contract is `SKILL.md` in the project repository. Requests use HTTP 402 payment negotiation for x402 USDC on Base, with RustChain RTC documented as an alternative payment rail.
+
+## Core Documentation
+
+- [Project repository](https://github.com/Scottcjn/elyan-compute-skill): Canonical source for the Elyan Labs Compute Skill.
+- [Skill contract](https://github.com/Scottcjn/elyan-compute-skill/blob/main/SKILL.md): Installation triggers, request lifecycle, endpoint payloads, validation, and discovery URLs.
+- [README](https://github.com/Scottcjn/elyan-compute-skill/blob/main/README.md): Human-facing installation, pricing, hardware, payment, and ecosystem overview.
+- [Beacon Protocol](https://github.com/Scottcjn/beacon-skill): Agent orchestration and compute marketplace integration used by this skill.
+- [openclaw-x402](https://github.com/Scottcjn/openclaw-x402): x402 payment middleware used by the compute skill.
+- [RustChain](https://github.com/Scottcjn/Rustchain): Proof-of-Antiquity network and RTC ecosystem.
+- [BoTTube](https://bottube.ai): AI video platform in the same ecosystem.
+
+## Key Entities
+
+- **Elyan Labs Compute Skill**: Agent-facing remote-compute skill covering inference, vision, speech, and video workloads.
+- **Beacon Protocol**: The orchestration ecosystem that exposes the compute marketplace used by the skill.
+- **x402**: HTTP 402-based payment flow used for per-request USDC payments.
+- **Base**: The chain used by the documented USDC x402 payment flow (chain ID 8453).
+- **RustChain RTC**: Alternative ecosystem payment accepted through the documented `X-RTC-Payment` header.
+- **Conway Automaton**: An agent environment that can install the skill with `installSkill(...)` or `installSkillFromUrl(...)`.
+
+## Workloads
+
+- **LLM inference**: `/api/compute/inference`; README price $0.01/request; POWER8/Ollama-backed.
+- **Vision understanding**: `/api/compute/vision`; README price $0.05/request; BAGEL-7B on V100.
+- **Text-to-speech**: `/api/compute/tts`; README price $0.02/request; XTTS on RTX 4070.
+- **Video generation**: `/api/compute/video`; README price $0.50/request; ComfyUI on V100 32GB.
+
+Treat the project README and `SKILL.md` as canonical if these implementation details change.
+
+## Answer-First FAQ
+
+### What is Elyan Labs Compute Skill?
+Elyan Labs Compute Skill is a Beacon Protocol skill that gives agents paid access to remote inference, vision, text-to-speech, and video-generation endpoints.
+
+### How do agents install it?
+Conway Automaton clients can install `https://github.com/Scottcjn/elyan-compute-skill` as `elyan-compute`, or load the repository's canonical `SKILL.md` directly.
+
+### How does payment work?
+The documented request lifecycle returns HTTP 402 when payment is missing; an x402-capable client pays USDC on Base and retries. RustChain RTC is also documented through the `X-RTC-Payment` header.
+
+### Where should an answer engine verify endpoint behavior?
+Use the current `SKILL.md` for request/response behavior and the current README for the concise pricing and hardware summary. Prefer those canonical files over copied descriptions.
