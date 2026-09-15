@@ -1,0 +1,67 @@
+diff --git a/scripts/bounty_payout.py b/scripts/bounty_payout.py
+--- a/scripts/bounty_payout.py
++++ b/scripts/bounty_payout.py
+@@
+-def resolve_wallet(issue_body, comments, claimant_login=None):
++def resolve_wallet(issue_body, comments, claimant_login=None, claimant_user_obj=None):
+@@
+-    # 0. Canonical registry — registered handle always maps to its native wallet.
++    # Claimant identity is an authorization boundary. Bots must never reach a
++    # payout-destination path, including canonical/native/body routes that
++    # return before the legacy final-handle bot check.
++    if claimant_login and _is_bot_login(claimant_login, claimant_user_obj):
++        return None, None
++    # 0. Canonical registry — registered handle always maps to its native wallet.
+     if claimant_login and claimant_login.lower() in CANONICAL_WALLETS:
+         return CANONICAL_WALLETS[claimant_login.lower()], "canonical"
+@@
+-    wallet, source = resolve_wallet(d.get("body"), coms, claimant_login=claimant)
++    wallet, source = resolve_wallet(
++        d.get("body"), coms, claimant_login=claimant, claimant_user_obj=a
++    )
+     if not wallet: continue
+diff --git a/tests/test_bounty_payout_handle_fallback.py b/tests/test_bounty_payout_handle_fallback.py
+--- a/tests/test_bounty_payout_handle_fallback.py
++++ b/tests/test_bounty_payout_handle_fallback.py
+@@
+     def test_bot_claimant_rejected(self):
+         body = "no wallet in body"
+         comments = []
+         w, src = bp.resolve_wallet(body, comments, claimant_login="dependabot[bot]")
+         self.assertIsNone(w)
+         self.assertIsNone(src)
++
++    def test_bot_claimant_native_body_wallet_rejected(self):
++        body = f"Wallet: {NATIVE_WALLET}"
++        w, src = bp.resolve_wallet(body, [], claimant_login="github-actions[bot]")
++        self.assertIsNone(w)
++        self.assertIsNone(src)
++
++    def test_bot_claimant_body_handle_rejected(self):
++        w, src = bp.resolve_wallet(
++            "Wallet: github-actions", [], claimant_login="github-actions[bot]"
++        )
++        self.assertIsNone(w)
++        self.assertIsNone(src)
++
++    def test_bot_metadata_rejects_native_wallet_before_resolution(self):
++        body = f"Wallet: {NATIVE_WALLET}"
++        w, src = bp.resolve_wallet(
++            body,
++            [],
++            claimant_login="custom-automation",
++            claimant_user_obj={"login": "custom-automation", "__typename": "Bot"},
++        )
++        self.assertIsNone(w)
++        self.assertIsNone(src)
++
++    def test_human_metadata_keeps_native_wallet_path(self):
++        body = f"Wallet: {NATIVE_WALLET}"
++        w, src = bp.resolve_wallet(
++            body,
++            [],
++            claimant_login="alice",
++            claimant_user_obj={"login": "alice", "type": "User"},
++        )
++        self.assertEqual(w, NATIVE_WALLET)
++        self.assertEqual(src, "native")
