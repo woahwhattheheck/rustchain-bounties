@@ -7,35 +7,38 @@ This directory contains an original, actual 23-second vertical motion-graphics e
 ## Deliverable
 
 - `rustchain-for-grandma-23s.mp4`
-- 23.13 seconds
-- 360×640 H.264 video, AAC voiceover
-- SHA-256: `29cd2d8ade127390e92a1116e0d6aef6965e03779727d0cf935d30a1f37898ae`
-- original vector-style slides and locally synthesized narration; no third-party footage or music
+- 23.40 seconds
+- 240×426 H.264 video, 5 fps, silent/caption-led
+- SHA-256: `f1001164e0048867d9c79b421d25bcb79ab53183fbe94075741dbc4f1ef87984`
+- original vector-style slides and transitions; no third-party footage, audio, or music
 
 ## Acceptance-criteria coverage
 
-The spoken and on-screen copy is intentionally jargon-free and directly covers the three required concepts:
+The on-screen copy is intentionally jargon-free and directly covers the three required concepts:
 
-1. **What RustChain is:** “a network that lets real computers take part and earn RTC.”
-2. **What mining means here:** the computer “checks in, proves it is real hardware, and helps the network keep score.”
-3. **Why old computers get a bonus:** RustChain is designed to make older machines worth keeping useful instead of throwing away.
+1. **What RustChain is:** “RustChain lets real machines take part and earn RTC.”
+2. **What mining means here:** “Your computer checks in, proves it is real hardware, and helps the network keep score.”
+3. **Why old computers get a bonus:** “The point is to keep yesterday’s machines useful instead of throwing them away.”
 
 The video is below 30 seconds. Any bounty bonus remains subject to the sponsor’s own review; this carrier does not claim an award or payment.
 
-## Transcript
+## On-screen script
 
-> RustChain is a network that lets real computers take part and earn R T C. Mining here means your computer checks in, proves it is real hardware, and helps the network keep score. Older computers get a bigger reward bonus, because RustChain is built to make yesterday's machines worth keeping useful instead of throwing away. That's RustChain.
+1. “A network for real computers” — “RustChain lets real machines take part and earn RTC.”
+2. “What ‘mining’ means here” — “Your computer checks in, proves it is real hardware, and helps the network keep score.”
+3. “Old computers get a bigger bonus” — “RustChain rewards vintage hardware more for participating.”
+4. “Why the bonus?” — “The point is to keep yesterday’s machines useful instead of throwing them away.”
+5. “That’s RustChain” — “Real computers. Simple mining. Extra love for old hardware.”
 
 ## Validation receipt
 
 Local render validation before publication:
 
 ```text
-duration=23.133333
-size=347424
-video=h264 360x640 15fps
-audio=aac
-sha256=29cd2d8ade127390e92a1116e0d6aef6965e03779727d0cf935d30a1f37898ae
+duration=23.400000
+size=19279
+video=h264 240x426 5fps
+sha256=f1001164e0048867d9c79b421d25bcb79ab53183fbe94075741dbc4f1ef87984
 ```
 
 No sponsor acceptance, RTC award, or payment is asserted here.
