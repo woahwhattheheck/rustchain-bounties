@@ -1,0 +1,38 @@
+{
+  "artifact": {
+    "format": "git-format-patch/2-commits",
+    "path": "bottube-x402-wallet-json.patch",
+    "sha256": "5876bb4019c8585b2588e93736e9dfa7393da4a15024e89e28bb6cd2c63514fb"
+  },
+  "attribution": {
+    "carrier_owner": "ZTL-P8V4",
+    "source_owner": "original paid-result seat"
+  },
+  "authority": {
+    "award_observed": false,
+    "payment_observed": false,
+    "source_patch_published": true,
+    "sponsor_acceptance_observed": false,
+    "sponsor_contact_performed_by_this_carrier": false
+  },
+  "bounty": {
+    "advertised_improvement_tier_rtc": 10,
+    "award_claimed": false,
+    "issue": 100,
+    "payment_claimed": false,
+    "url": "https://github.com/Scottcjn/rustchain-bounties/issues/100"
+  },
+  "schema": "rustchain-bounty-evidence/v1",
+  "target": {
+    "additions": 29,
+    "changed_files": [
+      "bottube_x402.py",
+      "tests/test_bottube_x402_init_app_registration.py"
+    ],
+    "deletions": 1,
+    "head": "1e684920bf36f8fdfdded84f2ebf10028ca15269",
+    "repository": "Scottcjn/bottube",
+    "source_pr": "https://github.com/woahwhattheheck/bottube/pull/17",
+    "upstream_base": "6af6b63f7a5a87353a30cd4552dc5c0e183a96af"
+  }
+}

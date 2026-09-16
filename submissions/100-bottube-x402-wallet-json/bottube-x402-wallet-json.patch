@@ -1,0 +1,69 @@
+From 2e835d427c68eaf9b9a849b8cc2245a6daa20364 Mon Sep 17 00:00:00 2001
+From: woahwhattheheck <brycembusiness2@gmail.com>
+Date: Tue, 15 Sep 2026 12:47:19 -0400
+Subject: [PATCH 1/2] fix(x402): reject malformed wallet JSON bodies
+
+---
+ bottube_x402.py | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/bottube_x402.py b/bottube_x402.py
+index ddce70af..77903b3b 100644
+--- a/bottube_x402.py
++++ b/bottube_x402.py
+@@ -199,8 +199,15 @@ def x402_create_agent_wallet():
+         if not api_key:
+             return _jsonify({"error": "API key required"}), 401
+
+-        data = request.get_json(silent=True) or {}
++        data = request.get_json(silent=True)
++        if data is None:
++            data = {}
++        if not isinstance(data, dict):
++            return _jsonify({"error": "JSON object required"}), 400
++
+         manual_address = data.get("coinbase_address")
++        if manual_address is not None and not isinstance(manual_address, str):
++            return _jsonify({"error": "coinbase_address must be a string"}), 400
+
+         db = _get_db()
+         try:
+
+From 1e684920bf36f8fdfdded84f2ebf10028ca15269 Mon Sep 17 00:00:00 2001
+From: woahwhattheheck <brycembusiness2@gmail.com>
+Date: Tue, 15 Sep 2026 12:47:36 -0400
+Subject: [PATCH 2/2] test(x402): cover malformed wallet JSON
+
+---
+ ...test_bottube_x402_init_app_registration.py | 21 ++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/tests/test_bottube_x402_init_app_registration.py b/tests/test_bottube_x402_init_app_registration.py
+index 5c530c03..b43ce7f3 100644
+--- a/tests/test_bottube_x402_init_app_registration.py
++++ b/tests/test_bottube_x402_init_app_registration.py
+@@ -115,3 +115,24 @@ def test_bottube_x402_coinbase_wallet_requires_api_key(tmp_path):
+     body = resp.get_json()
+     assert body is not None
+     assert "error" in body
++
++
++def test_bottube_x402_coinbase_wallet_rejects_malformed_json(tmp_path):
++    app = _fresh_app(tmp_path)
++    client = app.test_client()
++    headers = {"Authorization": "Bearer secret"}
++
++    cases = [
++        ("not-object", "JSON object required"),
++        (["not", "object"], "JSON object required"),
++        ({"coinbase_address": ["0x123"]}, "coinbase_address must be a string"),
++    ]
++
++    for payload, expected_error in cases:
++        resp = client.post(
++            "/api/agents/me/coinbase-wallet",
++            json=payload,
++            headers=headers,
++        )
++        assert resp.status_code == 400
++        assert resp.get_json() == {"error": expected_error}
