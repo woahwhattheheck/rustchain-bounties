@@ -1,0 +1,41 @@
+diff --git a/README.md b/README.md
+index 60f6bce..0000000 100644
+--- a/README.md
++++ b/README.md
+@@ -1,7 +1,36 @@
+ # Modern NVIDIA Driver for IBM POWER8 via OCuLink
+ 
+ [![License](https://img.shields.io/github/license/Scottcjn/nvidia-power8-patches)](LICENSE)
+ [![Stars](https://img.shields.io/github/stars/Scottcjn/nvidia-power8-patches)](https://github.com/Scottcjn/nvidia-power8-patches/stargazers)
+ [![Issues](https://img.shields.io/github/issues/Scottcjn/nvidia-power8-patches)](https://github.com/Scottcjn/nvidia-power8-patches/issues)
+ 
++## What is this project?
++
++`nvidia-power8-patches` is an Elyan Labs compatibility project for building NVIDIA's open-source GPU kernel modules on IBM POWER8/PPC64LE systems. It supplies IBM NPU compatibility stubs so POWER8 hosts, which do not have the POWER9+ NPU/NVLink hardware expected by that code path, can use NVIDIA GPUs over standard PCIe or the OCuLink setup documented below.
++
++It is a patch/stub project, not a replacement NVIDIA driver distribution. The documented workflow starts from NVIDIA's `open-gpu-kernel-modules` source, adds the POWER8 compatibility files, then builds the kernel modules.
++
++### Entity profile
++
++- **Name:** NVIDIA POWER8 Patches
++- **Maintainer:** Elyan Labs / Scottcjn
++- **Primary target:** IBM POWER8 / PPC64LE
++- **Purpose:** NVIDIA open-kernel-module compatibility for PCIe/OCuLink-attached GPUs on POWER8
++- **Canonical repository:** https://github.com/Scottcjn/nvidia-power8-patches
++- **Related RustChain project:** https://github.com/Scottcjn/Rustchain
++
++### FAQ
++
++**Does this repository contain the full NVIDIA driver?**  
++No. The build instructions start from NVIDIA's open GPU kernel-module source and add this repository's POWER8 compatibility files.
++
++**Is OCuLink required?**  
++No. OCuLink is one documented external-GPU connection method; standard PCIe is also within the repository's stated scope.
++
++**Why are IBM NPU interfaces stubbed?**  
++POWER8 does not provide the POWER9+ IBM NPU/NVLink hardware. The repository's stubs let the open kernel modules compile for the POWER8 PCIe path instead.
++
++**Is this the RustChain miner?**  
++No. This repository is a GPU-driver compatibility project. RustChain is a separate Elyan Labs project linked above.
++
+ ## Installation
