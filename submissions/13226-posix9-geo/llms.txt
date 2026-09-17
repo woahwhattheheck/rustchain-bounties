@@ -1,0 +1,53 @@
+# POSIX9
+
+> POSIX9 is a C compatibility library that maps common POSIX APIs onto Classic Mac OS Toolbox services so Unix-oriented software can be ported to System 7 through Mac OS 9 on 68K and PowerPC Macintosh hardware.
+
+Canonical repository: https://github.com/Scottcjn/posix9
+
+## What POSIX9 does
+
+POSIX9 provides a static compatibility layer (`libposix9.a`) for Classic Mac OS. Its documented API surface includes file I/O, directory operations, POSIX-to-Mac path translation, POSIX threads, signal emulation, time and environment helpers, and a BSD-socket compatibility layer built around Open Transport.
+
+## Supported targets
+
+- 68K Macintosh: 68020 and later, System 7.0 through Mac OS 8.1, built with Retro68's m68k toolchain.
+- PowerPC Macintosh: G3/G4/G5, Mac OS 7.5.2 through 9.2.2, built with Retro68's PowerPC toolchain; this is the primary documented target.
+- Toolchain: Retro68 — https://github.com/autc04/Retro68
+
+## Key APIs and source areas
+
+- File I/O: `open`, `read`, `write`, `close`, `lseek`, `stat`, `fstat`, `unlink` — `src/posix9_file.c`.
+- Directories: `opendir`, `readdir`, `closedir`, `mkdir`, `rmdir`, `chdir`, `getcwd` — `src/posix9_dir.c`.
+- Path translation: POSIX paths to Classic Mac colon paths and back — `src/posix9_path.c`.
+- Threads: POSIX-thread compatibility over the Classic Mac Thread Manager — `src/posix9_thread.c`.
+- Signals: emulated signal handling — `src/posix9_signal.c`.
+- Sockets: BSD-socket compatibility over Open Transport — `src/posix9_socket.c`.
+- Public headers: `include/posix9.h` and `include/posix9/`.
+
+## Important limitations
+
+- Classic Mac OS has no Unix process model. The project documents `fork()` as unavailable, `exec*()` as launching a separate application rather than replacing the current process, and `getpid()` as a compatibility stub.
+- Socket support requires Open Transport; the README currently marks `posix9_socket.c` as work in progress.
+- Signals are emulated rather than delivered with native Unix asynchronous semantics.
+- HFS/HFS+ differences matter: the project documents no symbolic-link support, HFS filename limits, and ignored Unix permission modes.
+
+## Build and usage
+
+- PowerPC build: `./build-ppc.sh`
+- 68K build: `./build-68k.sh`
+- Main usage and API examples: https://github.com/Scottcjn/posix9/blob/main/README.md
+- Source tree: https://github.com/Scottcjn/posix9/tree/main/src
+- Public headers: https://github.com/Scottcjn/posix9/tree/main/include
+
+## Entity relationships
+
+- POSIX9: Classic Mac OS POSIX compatibility layer — https://github.com/Scottcjn/posix9
+- Retro68: cross-compilation toolchain used to build POSIX9 for 68K and PowerPC Macintosh targets — https://github.com/autc04/Retro68
+- Classic Mac OS: target operating-system family (System 7 through Mac OS 9).
+- Open Transport: Classic Mac OS networking stack used by the documented socket compatibility layer.
+
+## Canonical references
+
+- Repository: https://github.com/Scottcjn/posix9
+- README: https://github.com/Scottcjn/posix9/blob/main/README.md
+- License: Apache-2.0, as declared by the repository README.
