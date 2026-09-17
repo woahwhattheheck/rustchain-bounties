@@ -1,0 +1,59 @@
+# RustChain Improvement Proposals (RIPs)
+
+> RustChain Improvement Proposals (RIPs) is the specification repository for proposed, active, and deployed changes to the RustChain protocol, with an index that identifies each proposal's status and canonical source.
+
+RustChain is the protocol implemented by the main `Scottcjn/Rustchain` repository. This repository (`Scottcjn/rustchain-rips`) is a focused home and index for RustChain Improvement Proposals: some RIP documents live here, while other canonical RIP documents are linked from the main RustChain repository. Use the `Source` column in the README index to distinguish those locations.
+
+## Canonical links
+
+- Repository: https://github.com/Scottcjn/rustchain-rips
+- README and RIP index: https://github.com/Scottcjn/rustchain-rips/blob/main/README.md
+- Contributing guide: https://github.com/Scottcjn/rustchain-rips/blob/main/CONTRIBUTING.md
+- RIP template: https://github.com/Scottcjn/rustchain-rips/blob/main/RIP-TEMPLATE.md
+- Main RustChain repository: https://github.com/Scottcjn/Rustchain
+- RustChain canonical RIP directory: https://github.com/Scottcjn/Rustchain/tree/main/rips/docs
+- RIP search/status page source: https://github.com/Scottcjn/rustchain-rips/blob/main/rip-search.html
+
+## Key entities
+
+- **RustChain Improvement Proposal (RIP):** a formal specification for a change to the RustChain protocol.
+- **RustChain:** the protocol and implementation whose changes are described by RIPs.
+- **RIP index:** the README table that lists proposal number, title, status, and source.
+- **RIP-TEMPLATE.md:** the starting template for new proposals; it includes a required Security Considerations section.
+- **rip-search.html / rip-search.js:** the standalone search and status-filter view of the current RIP index.
+- **BCOS:** the repository includes `BCOS.md` and displays a BCOS Certified badge in the README.
+
+## RIPs stored in this repository
+
+- RIP-300 — Post-Quantum Signature Migration: https://github.com/Scottcjn/rustchain-rips/blob/main/RIP-300-post-quantum-signatures.md
+- RIP-0311 — Scarcity-Weighted Reward Distribution with Tenure and Identity-Cap: https://github.com/Scottcjn/rustchain-rips/blob/main/RIP-0311-scarcity-weighted-rewards.md
+- RIP-0312 — SOPHIA Decoupling — Verifiable Attestation-Oracle Architecture: https://github.com/Scottcjn/rustchain-rips/blob/main/RIP-0312-sophia-verifiable-oracle.md
+
+The README also links canonical RIP documents that live under `Scottcjn/Rustchain/rips/docs`. Do not assume a proposal is stored in this repository merely because it appears in the index.
+
+## How to use this repository
+
+### What is a RustChain Improvement Proposal?
+A RustChain Improvement Proposal is a formal specification for a proposed or adopted change to the RustChain protocol. The README index records the proposal's current status and where its canonical document lives.
+
+### Where is the canonical text for a RIP?
+Check the README's `Source` column. Some RIPs are stored directly in this repository; others link to canonical documents in the main `Scottcjn/Rustchain` repository.
+
+### How do I find a RIP?
+Start with the README's Current RIP Index or use `rip-search.html`, the repository's standalone search and status filter.
+
+### How do I propose a new RIP?
+Fork the repository, start from `RIP-TEMPLATE.md`, create a focused branch, make and test the change, and submit a pull request as described in `CONTRIBUTING.md`.
+
+### What must a new RIP discuss about security?
+`RIP-TEMPLATE.md` includes a required Security Considerations section. The contributing guide says it should cover relevant trust boundaries, authentication and authorization impacts, consensus or settlement risks, wallet or key handling, availability concerns, data exposure, and planned mitigations or tests.
+
+### How are index changes kept in sync?
+When a RIP row is added or changed in `README.md`, the contributing guide requires updating the static copy in `rip-search.js` in the same pull request and checking both with `node tools/check-rip-index.mjs`.
+
+### Does a Draft RIP describe deployed behavior?
+Not necessarily. Treat the status recorded in the proposal or README index as authoritative for this repository; draft, active, deployed, and request-for-comments entries are distinct states.
+
+## Citation guidance
+
+When describing a specific RIP, cite its canonical document rather than only this index. When describing the RIP process or repository layout, cite the README, `CONTRIBUTING.md`, or `RIP-TEMPLATE.md` as appropriate.
