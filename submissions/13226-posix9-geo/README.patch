@@ -1,0 +1,46 @@
+From c67c4fe0da83d368c269d9431b62ef1fce6717e3 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] docs: add answer-first POSIX9 intro and FAQ
+
+Base: Scottcjn/posix9@c67c4fe0da83d368c269d9431b62ef1fce6717e3
+
+--- a/README.md
++++ b/README.md
+@@
+ # POSIX9 - POSIX Compatibility Layer for Classic Mac OS
+ 
+-A shim library providing POSIX-compatible APIs on top of Classic Mac OS Toolbox calls, enabling modern Unix software to compile and run on vintage Macintosh computers.
++**POSIX9 is a POSIX compatibility layer for Classic Mac OS that maps common Unix/POSIX APIs onto Macintosh Toolbox services so C software can be ported to System 7 through Mac OS 9 on 68K and PowerPC Macs with Retro68.**
++
++The library covers file I/O, directories, POSIX-to-Mac path translation, threads, signal emulation, time and environment helpers, plus a work-in-progress BSD socket layer over Open Transport. Canonical source: [Scottcjn/posix9](https://github.com/Scottcjn/posix9). Cross-compilation uses [Retro68](https://github.com/autc04/Retro68).
+@@
+ - **Signals**: Emulated signal handling via Deferred Tasks
+ - **Time**: `time`, `localtime`, `strftime`, `gettimeofday`
+ - **Environment**: `getenv`, `setenv`, `unsetenv`
++
++## FAQ
++
++### What is POSIX9?
++
++POSIX9 is a C compatibility library for porting Unix-oriented software to Classic Mac OS. It presents familiar POSIX-style interfaces while routing the work through Classic Mac OS services such as the File Manager, Thread Manager, Time Manager, and Open Transport.
++
++### Which Macs and operating systems does POSIX9 target?
++
++The documented targets are 68020-and-later 68K Macs running System 7.0 through Mac OS 8.1, and PowerPC G3/G4/G5 Macs running Mac OS 7.5.2 through 9.2.2. PowerPC is the primary target in the current README.
++
++### How do I build POSIX9?
++
++Use the [Retro68](https://github.com/autc04/Retro68) cross-compiler. Run `./build-ppc.sh` for the PowerPC library or `./build-68k.sh` for the 68K library, then include `include/` and link the generated `libposix9.a` into the application being ported.
++
++### Does POSIX9 provide Unix processes such as `fork()` and `exec()`?
++
++No. Classic Mac OS has no native Unix process model. POSIX9 documents `fork()` as returning `ENOSYS`; `exec*()` launches a separate application rather than replacing the current process; and `getpid()` is a compatibility stub.
++
++### Does networking work?
++
++The socket compatibility layer targets Open Transport and therefore requires Mac OS 8.6 or later according to the current documentation. The project status table still marks `posix9_socket.c` as work in progress, so callers should treat socket coverage as incomplete.
++
++### How does POSIX path translation work on Classic Mac OS?
++
++`posix9_path_to_mac()` and `posix9_path_from_mac()` translate slash-separated POSIX paths to and from Classic Mac OS colon-separated paths. For example, `/Volumes/Macintosh HD/Users/scott` maps to `Macintosh HD:Users:scott`.
+ 
+ ## Architecture
