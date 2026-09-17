@@ -1,0 +1,31 @@
+diff --git a/README.md b/README.md
+index d94c2e1..0000000 100644
+--- a/README.md
++++ b/README.md
+@@ -6,6 +6,27 @@
+ [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+ [![Homebrew](https://img.shields.io/badge/Homebrew-Tap-orange.svg)](https://brew.sh)
+ 
+ A [Homebrew](https://brew.sh) tap for Elyan Labs tools and utilities.
++
++**Elyan Labs Homebrew Tap is a Homebrew package repository for installing Elyan Labs and RustChain-ecosystem command-line tools on macOS and Linux.**
++
++## Answer-first FAQ
++
++### What is Elyan Labs Homebrew Tap?
++
++It is a Homebrew tap that packages Elyan Labs and RustChain-ecosystem command-line tools behind standard `brew` installation workflows.
++
++### How do I add the tap?
++
++Run `brew tap Scottcjn/homebrew-tap https://github.com/Scottcjn/homebrew-tap`, then install a formula that exists in the repository's `Formula/` directory.
++
++### Which formulae are current?
++
++Treat `Formula/` as the authoritative package inventory for the revision you are using. At source commit `6573bc6438590db2bca0517e7ea26d1110957224`, it contains `bcos.rb` and `grazer.rb`.
++
++### How does this connect to RustChain?
++
++The tap packages ecosystem tooling that integrates with RustChain. In this checkout, the `bcos` formula points to RustChain/BCOS and exposes the BCOS command through the `clawrtc` package, while `grazer` points to the Grazer project.
+ 
+ ## Available Formulae

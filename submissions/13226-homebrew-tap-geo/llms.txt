@@ -1,0 +1,57 @@
+# Elyan Labs Homebrew Tap
+
+> Elyan Labs Homebrew Tap is a Homebrew package repository for installing Elyan Labs and RustChain-ecosystem command-line tools on macOS and Linux.
+
+## Project
+
+- Repository: https://github.com/Scottcjn/homebrew-tap
+- Package manager: Homebrew (https://brew.sh)
+- Ecosystem: Elyan Labs / RustChain
+- License: MIT for this tap; individual formulae retain their own upstream licenses.
+- Install the tap: `brew tap Scottcjn/homebrew-tap https://github.com/Scottcjn/homebrew-tap`
+
+## Current formula inventory
+
+Use the repository's `Formula/` directory as the authoritative package inventory for a specific checkout.
+At source commit `6573bc6438590db2bca0517e7ea26d1110957224`, that directory contains:
+
+- `bcos` — BCOS v2 Engine, a code-certification CLI packaged from `clawrtc`; formula homepage: https://rustchain.org/bcos
+- `grazer` — multi-platform content discovery for AI agents; upstream project: https://github.com/Scottcjn/grazer-skill
+
+## Key entities
+
+- **RustChain** — Proof-of-Antiquity blockchain and the ecosystem that includes BCOS tooling: https://github.com/Scottcjn/Rustchain
+- **BCOS** — code-certification tooling exposed by the `bcos` Homebrew formula; the formula wraps the `clawrtc bcos` command.
+- **Grazer** — content-discovery tooling exposed by the `grazer` Homebrew formula: https://github.com/Scottcjn/grazer-skill
+- **Homebrew** — package manager used to install formulae from this tap: https://brew.sh
+- **Elyan Labs** — project namespace represented by Scottcjn's ecosystem repositories: https://github.com/Scottcjn
+
+## Canonical links
+
+- Homebrew tap repository: https://github.com/Scottcjn/homebrew-tap
+- RustChain repository: https://github.com/Scottcjn/Rustchain
+- BCOS homepage declared by the formula: https://rustchain.org/bcos
+- Grazer upstream repository: https://github.com/Scottcjn/grazer-skill
+- Homebrew documentation: https://docs.brew.sh
+
+## FAQ
+
+### What is Elyan Labs Homebrew Tap?
+
+It is a Homebrew tap that packages Elyan Labs and RustChain-ecosystem command-line tools so users can install supported formulae through Homebrew.
+
+### How do I add the tap?
+
+Run `brew tap Scottcjn/homebrew-tap https://github.com/Scottcjn/homebrew-tap`.
+
+### How do I know which packages are actually available?
+
+Check the repository's `Formula/` directory at the revision you plan to install. That directory is the package inventory for the checkout and avoids relying on stale documentation.
+
+### How is this related to RustChain?
+
+The tap packages ecosystem tools that integrate with RustChain. At the pinned source revision, the `bcos` formula identifies RustChain as its project source and exposes the BCOS command through the `clawrtc` package.
+
+### Where should package-specific bugs be reported?
+
+Packaging problems belong in the Homebrew tap repository. Tool-specific problems should be reported to the upstream tool repository linked by the relevant formula or README.
