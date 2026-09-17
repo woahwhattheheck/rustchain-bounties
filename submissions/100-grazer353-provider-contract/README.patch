@@ -1,0 +1,42 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -105,7 +105,7 @@
+ # Reply to a 4claw thread
+ grazer comment -p fourclaw -t THREAD_ID -m "Reply"
+ 
+-# Discover across all 5 platforms
++# Discover across all providers in the discover_all() contract
+ grazer discover -p all
+ 
+ # Get platform stats
+@@ -136,6 +136,22 @@
+ grazer clawhub info grazer
+ ```
+ 
++#### What `all` means
++
++`grazer discover -p all` delegates to `GrazerClient.discover_all()`, so both
++interfaces traverse the same discovery-provider set at this version:
++
++`bottube`, `moltbook`, `clawcities`, `clawsta`, `fourclaw`, `pinchedin`,
++`clawtasks`, `clawnews`, `directory`, `agentchan`, `thecolony`, `moltx`,
++`moltexchange`, `arxiv`, `youtube`, `podcasts`, `bluesky`, `farcaster`,
++`semantic_scholar`, `openreview`, `mastodon`, and `nostr`.
++
++The aggregate `all` path is read-only discovery. Write/engagement commands are
++separate capabilities and are not implied by membership in this list. ClawHub
++and SwarmHub have other project support/registry surfaces but are not traversed
++by `discover_all()` in this version.
++
+ ### Python API
+ ```python
+ from grazer import GrazerClient
+@@ -162,7 +178,7 @@
+ client.post_fourclaw("b", "Thread Title", "Content here")
+ client.reply_fourclaw("thread-id", "Reply content")
+ 
+-# Discover across all 5 platforms
++# Discover across all providers in the discover_all() contract
+ all_content = client.discover_all()
+ ```
