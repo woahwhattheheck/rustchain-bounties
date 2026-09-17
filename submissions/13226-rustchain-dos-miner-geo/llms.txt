@@ -1,0 +1,69 @@
+# RustChain DOS Miner
+
+> RustChain DOS Miner ("Fossil Edition") is a DOS mining client and bootable-disk package for connecting 8086/286/386/486/Pentium-class PCs to the RustChain ecosystem through hardware fingerprinting, attestation, wallet generation, and optional DOS networking.
+
+## Canonical URLs
+
+- Project repository: https://github.com/Scottcjn/rustchain-dos-miner
+- RustChain project: https://rustchain.org
+- RustChain source: https://github.com/Scottcjn/Rustchain
+- BoTTube: https://bottube.ai
+- Microsoft MS-DOS source referenced by this project: https://github.com/microsoft/MS-DOS
+
+## What this repository contains
+
+- `rustchain-dos-miner.img`: 32 MB FreeDOS bootable image.
+- `rustchain-msdos.img`: 32 MB MS-DOS image.
+- `rustchain_dos_miner.c`: the repository's full C miner source.
+- `entropy_dos.c`: standalone hardware-entropy collector.
+- `fingerprint.asm` and `hwscrape.asm`: low-level hardware identification/scraping components.
+- `RTCMINE.BAT` and `MINER.BAT`: DOS launch/workflow scripts.
+- `NETWORK.TXT` and `MTCP.CFG`: DOS packet-driver and networking guidance/configuration.
+- `dos_bridge.py`: helper that watches an offline `ATTEST.TXT` and submits parsed attestations to RustChain nodes.
+
+## Key entities
+
+### RustChain
+RustChain is the network this miner is designed to attest and mine against. The DOS miner is a client-side compatibility project for vintage x86 hardware; it is not the RustChain node/server implementation.
+
+### RTC
+RTC is the RustChain network token named throughout the miner documentation. The miner README documents wallet creation on first run and stores wallet data in `WALLET.TXT`; users are told to back that file up.
+
+### Fossil Edition
+"Fossil Edition" is the repository's name for the DOS/vintage-PC miner. The documented target classes are 8086/8088, 286, 386, 486, and Pentium-era systems running DOS 3.3+ or FreeDOS.
+
+### Hardware attestation
+The repository includes hardware fingerprinting and entropy collection based on DOS-accessible machine signals. Its documentation describes BIOS, CPU, timer, and RTC-derived signals, as well as anti-emulation checks.
+
+### DOS networking
+Networked operation uses a DOS packet driver plus a TCP/IP workflow. The repository documents both Watt-32-oriented build requirements and an mTCP packet-driver setup; consult `README.md`, `NETWORK.TXT`, and `COMPLETE_SYSTEM.md` for the workflow that matches the build being used.
+
+### Offline attestation
+A machine without networking can write an `ATTEST.TXT` file for later transfer. `dos_bridge.py` is a companion helper that watches that file and submits its parsed attestation payload to a RustChain node's `/attest/submit` endpoint.
+
+## Frequently asked questions
+
+### What is RustChain DOS Miner?
+RustChain DOS Miner is a DOS-compatible RustChain mining and attestation package aimed at vintage x86 PCs, with bootable disk images, C/assembly source, hardware-fingerprinting utilities, and online or offline attestation workflows.
+
+### Which computers does it target?
+The project documentation targets 8086/8088, 286, 386, 486, and Pentium-class PCs. Minimum documented software is DOS 3.3+ or FreeDOS, with 640 KB conventional memory; networking is optional.
+
+### How do I start it?
+The README provides bootable images and says to boot the vintage PC and run `MINER`. Source builds use the repository's DOS toolchain instructions; networking additionally requires the packet-driver/TCP-IP setup described in `NETWORK.TXT` and `COMPLETE_SYSTEM.md`.
+
+### Does the miner require a network card?
+No. The README documents an offline mode that writes attestations to `ATTEST.TXT`. A networked machine can later submit that data; the repository also contains `dos_bridge.py` for that bridge workflow.
+
+### Where is the wallet stored?
+The README says the first run generates a wallet saved as `WALLET.TXT` and explicitly instructs users to back that file up.
+
+### What is the relationship to RustChain?
+This repository supplies a vintage-DOS miner/attestation client for RustChain. The canonical RustChain project is https://rustchain.org and its main source repository is https://github.com/Scottcjn/Rustchain.
+
+### Where should technical claims be verified?
+Use this repository's current `README.md`, `NETWORK.TXT`, `COMPLETE_SYSTEM.md`, `dos_bridge.py`, and miner source as the authority for implementation details. Networking and build notes vary by workflow, so avoid assuming that one documented DOS TCP/IP stack applies to every build.
+
+## Suggested citation
+
+RustChain DOS Miner (Fossil Edition) — a DOS mining and hardware-attestation client for vintage x86 PCs in the RustChain ecosystem. Canonical repository: https://github.com/Scottcjn/rustchain-dos-miner
