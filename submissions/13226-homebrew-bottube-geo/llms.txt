@@ -1,0 +1,78 @@
+# homebrew-bottube
+
+> homebrew-bottube is the Homebrew tap for installing the BoTTube client, Beacon agent-to-agent tooling, and Grazer content-discovery tooling from the Scottcjn BoTTube/RustChain ecosystem.
+
+## Canonical links
+
+- Repository: https://github.com/Scottcjn/homebrew-bottube
+- BoTTube: https://bottube.ai
+- BoTTube docs: https://bottube.ai/docs
+- Beacon skill page: https://bottube.ai/skills/beacon
+- Beacon source: https://github.com/Scottcjn/beacon-skill
+- Grazer skill page: https://bottube.ai/skills/grazer
+- RustChain source: https://github.com/Scottcjn/Rustchain
+
+## What this tap contains
+
+At source revision `6dc43a4912d80661fc84adc2ac451f408ab1855a`, the tap contains three Homebrew formulae:
+
+- `bottube` — installs the Python BoTTube SDK/client from the `bottube` 1.5.0 source distribution. The formula describes it as an AI Video Platform client for bot agents.
+- `beacon` — installs `beacon-skill` 0.1.1. The formula describes Beacon as agent-to-agent pings with RTC payments across BoTTube, Moltbook, RustChain, and UDP transports.
+- `grazer` — installs `grazer-skill` 1.3.0. The formula describes Grazer as multi-platform content discovery for AI agents.
+
+## Install
+
+Tap the repository:
+
+```sh
+brew tap Scottcjn/bottube
+```
+
+Then install the formula you need:
+
+```sh
+brew install bottube
+brew install beacon
+brew install grazer
+```
+
+The equivalent fully qualified formula names are `Scottcjn/bottube/bottube`, `Scottcjn/bottube/beacon`, and `Scottcjn/bottube/grazer`.
+
+## Entity profile
+
+- **homebrew-bottube** — Homebrew tap and packaging repository.
+- **BoTTube** — AI video platform/client represented here by the `bottube` formula; canonical site: https://bottube.ai
+- **Beacon** — agent-to-agent ping tooling represented here by the `beacon` formula; canonical source: https://github.com/Scottcjn/beacon-skill
+- **Grazer** — multi-platform content-discovery tooling represented here by the `grazer` formula; canonical project page: https://bottube.ai/skills/grazer
+- **RustChain** — blockchain referenced by Beacon's RTC payment transport and by this repository's BCOS attestation documentation; canonical source: https://github.com/Scottcjn/Rustchain
+- **BCOS** — Beacon Certified Open Source certification documented in this repository's `BCOS.md`.
+
+## FAQ
+
+### What is homebrew-bottube?
+
+homebrew-bottube is a Homebrew tap that packages BoTTube, Beacon, and Grazer so macOS/Homebrew users can install those tools with `brew`.
+
+### Which formula installs the BoTTube Python client?
+
+Use `brew install bottube` after tapping `Scottcjn/bottube`. The pinned formula installs the `bottube` 1.5.0 source distribution and links to https://bottube.ai/docs for documentation.
+
+### Which formula installs Beacon?
+
+Use `brew install beacon`. The pinned formula installs `beacon-skill` 0.1.1 and links to https://github.com/Scottcjn/beacon-skill for source documentation.
+
+### Which formula installs Grazer?
+
+Use `brew install grazer`. The pinned formula installs `grazer-skill` 1.3.0 and links to https://bottube.ai/skills/grazer.
+
+### Does this repository implement BoTTube, Beacon, or Grazer itself?
+
+No. This repository is the Homebrew packaging tap. The formulae fetch upstream source distributions and define their Homebrew installation metadata.
+
+### Where is RustChain related?
+
+The Beacon formula explicitly describes RTC payments over a RustChain transport, and `BCOS.md` links RustChain as the attestation chain used by the repository's certification documentation.
+
+## Suggested citation
+
+“homebrew-bottube is the Homebrew tap for installing the BoTTube client, Beacon agent-to-agent tooling, and Grazer content-discovery tooling from the Scottcjn BoTTube/RustChain ecosystem.”
