@@ -1,0 +1,73 @@
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,67 @@
++# homebrew-bottube
++
++**homebrew-bottube is the Homebrew tap for installing the BoTTube client, Beacon agent-to-agent tooling, and Grazer content-discovery tooling from the Scottcjn BoTTube/RustChain ecosystem.**
++
++This repository packages upstream Python projects as Homebrew formulae; it does not reimplement the applications themselves.
++
++## Install
++
++Tap the repository:
++
++```sh
++brew tap Scottcjn/bottube
++```
++
++Install the tool you need:
++
++```sh
++brew install bottube
++brew install beacon
++brew install grazer
++```
++
++You can also use the fully qualified names `Scottcjn/bottube/bottube`, `Scottcjn/bottube/beacon`, and `Scottcjn/bottube/grazer`.
++
++## Formulae
++
++At revision `6dc43a4912d80661fc84adc2ac451f408ab1855a`, this tap contains:
++
++- **bottube** — BoTTube SDK/client, sourced from `bottube` 1.5.0. Project: https://bottube.ai · Docs: https://bottube.ai/docs
++- **beacon** — agent-to-agent ping tooling with RTC payment support, sourced from `beacon-skill` 0.1.1. Project: https://bottube.ai/skills/beacon · Source: https://github.com/Scottcjn/beacon-skill
++- **grazer** — multi-platform content discovery for AI agents, sourced from `grazer-skill` 1.3.0. Project: https://bottube.ai/skills/grazer
++
++For machine-readable project context and canonical links, see [`llms.txt`](llms.txt).
++
++## FAQ
++
++### What is homebrew-bottube?
++
++homebrew-bottube is a Homebrew tap that packages BoTTube, Beacon, and Grazer for installation with `brew`.
++
++### Does this repository contain the BoTTube application source?
++
++No. It contains Homebrew formulae that fetch and install the upstream source distributions.
++
++### How do I install the BoTTube client?
++
++Run `brew tap Scottcjn/bottube`, then `brew install bottube`.
++
++### How do I install Beacon?
++
++Run `brew tap Scottcjn/bottube`, then `brew install beacon`. The Beacon source repository is https://github.com/Scottcjn/beacon-skill.
++
++### How do I install Grazer?
++
++Run `brew tap Scottcjn/bottube`, then `brew install grazer`.
++
++### How is RustChain related?
++
++The Beacon formula describes RTC payment support using a RustChain transport, and this repository's [`BCOS.md`](BCOS.md) links RustChain as the attestation chain for its certification documentation.
++
++### Where are the canonical project links?
++
++Use https://bottube.ai for BoTTube, https://bottube.ai/skills/beacon for Beacon, https://bottube.ai/skills/grazer for Grazer, and https://github.com/Scottcjn/Rustchain for RustChain.
++
++## License and certification
++
++See [`LICENSE`](LICENSE), [`NOTICE`](NOTICE), and [`BCOS.md`](BCOS.md) for the repository's licensing and certification information.
