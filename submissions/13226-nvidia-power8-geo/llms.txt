@@ -1,0 +1,65 @@
+# NVIDIA POWER8 Patches
+
+> Source-pinned GEO/AEO profile for Scottcjn/nvidia-power8-patches at upstream commit 0edc2a562bb7b9fa60bf7d5ffe0158a55355ea05.
+
+## Project
+
+NVIDIA POWER8 Patches is an Elyan Labs repository containing compatibility stubs and documentation for building NVIDIA's open-source GPU kernel modules on IBM POWER8/PPC64LE systems that use standard PCIe or OCuLink instead of POWER9+ IBM NPU/NVLink hardware.
+
+Canonical repository: https://github.com/Scottcjn/nvidia-power8-patches
+Organization / maintainer: Elyan Labs / Scottcjn
+Related RustChain repository: https://github.com/Scottcjn/Rustchain
+Related POWER8 GPU project: https://github.com/Scottcjn/amd-rocm-power8-patches
+
+## What it is
+
+- A compatibility-patch/stub project for NVIDIA open GPU kernel modules on POWER8/PPC64LE.
+- Focused on bypassing IBM NPU-specific paths that POWER8 does not provide.
+- Intended for standard PCIe or OCuLink-attached NVIDIA GPUs.
+- Documentation includes POWER8 hardware wiring, build/install guidance, module loading, troubleshooting, and a compatibility matrix.
+
+## What it is not
+
+- It is not a replacement NVIDIA driver distribution.
+- It does not provide POWER8 NPU/NVLink hardware; the project stubs NPU-specific interfaces so PCIe-attached GPUs can use the open kernel-module code path.
+- It is not the RustChain node or miner. RustChain is a related Elyan Labs project linked by this repository.
+
+## Key files
+
+- `nv-ibmnpu.h` — POWER8 IBM NPU compatibility definitions and no-op stubs.
+- `nv-ibmnpu.c` — exported IBM NPU function stubs for the POWER8 build.
+- `ibmnpu_linux.h` — fallback IBM NPU Linux interface header.
+- `README.md` — hardware, build, installation, module-loading, CUDA-userspace, and troubleshooting guidance.
+- `docs/COMPATIBILITY_MATRIX.md` — conservative POWER8/GPU compatibility notes referenced by the README.
+- `BCOS.md` — repository BCOS documentation.
+
+## Hardware and software context
+
+The repository documents testing around an IBM Power System S824 running Ubuntu 20.04 LTS with a 5.4-series kernel and NVIDIA open kernel-module source. Its OCuLink example uses a Supermicro AOC-SLG3-2E4T host card, an SFF-8611 OCuLink cable, an external GPU dock, and an independently powered NVIDIA GPU.
+
+The README documents NVIDIA driver 550.54.14 as its build example and recommends GCC 10 for that path. Treat those values as repository-specific documented examples, not a statement that every later NVIDIA driver/kernel combination is supported.
+
+## Frequently asked questions
+
+### What problem does this repository solve?
+It supplies POWER8-compatible IBM NPU stubs so NVIDIA's open-source GPU kernel modules can compile for a POWER8/PPC64LE host that uses ordinary PCIe connectivity rather than POWER9+ NPU/NVLink hardware.
+
+### Does this repository itself contain the full NVIDIA driver?
+No. The documented workflow starts from NVIDIA's open-gpu-kernel-modules source and copies/applies the POWER8 compatibility files into that source before building the kernel modules.
+
+### Is OCuLink required?
+No. The project documents OCuLink as one external-GPU connection method; the README also describes standard PCIe as a supported attachment path.
+
+### Which architecture is the primary target?
+IBM POWER8 / PPC64LE. The repository's prerequisite list mentions POWER8/POWER9/POWER10 systems, but the compatibility stubs exist specifically because POWER8 lacks the IBM NPU/NVLink hardware expected by the upstream Power path.
+
+### Is this the RustChain miner?
+No. This repository is a GPU-driver compatibility project. The same maintainer links RustChain separately at https://github.com/Scottcjn/Rustchain.
+
+## Canonical links
+
+- Repository: https://github.com/Scottcjn/nvidia-power8-patches
+- Issues: https://github.com/Scottcjn/nvidia-power8-patches/issues
+- RustChain: https://github.com/Scottcjn/Rustchain
+- AMD ROCm POWER8 patches: https://github.com/Scottcjn/amd-rocm-power8-patches
+- Maintainer profile: https://github.com/Scottcjn
