@@ -101,10 +101,12 @@ function drawMinimap(canvas) {
   );
   const camera = getCamera();
   const cameraPoint = camera ? { x: camera.position.x, z: camera.position.z } : null;
+  // Keep the overview footprint stable while the camera moves. The camera
+  // marker is projected separately and clamps to the minimap edge when it
+  // moves outside the populated Atlas bounds.
   const bounds = computeAtlasBounds([
     ...cityPoints,
     ...agentPoints,
-    ...(cameraPoint ? [cameraPoint] : []),
   ], 24);
 
   ctx.clearRect(0, 0, width, height);
