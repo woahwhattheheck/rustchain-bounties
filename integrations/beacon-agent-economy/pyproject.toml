@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "beacon-agent-economy"
+version = "0.1.0"
+description = "Beacon skill adapter for RustChain RIP-302 Agent Economy"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = [
+  "requests>=2.25",
+  "cryptography>=41",
+]
+
+[project.optional-dependencies]
+beacon = ["beacon-skill>=2.16.1"]
+
+[tool.setuptools.packages.find]
+include = ["beacon_agent_economy*"]
